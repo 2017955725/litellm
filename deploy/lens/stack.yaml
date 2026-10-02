@@ -13,7 +13,7 @@ services:
         clickhouse_password = quote(os.environ["CLICKHOUSE_PASSWORD"], safe="")
         os.environ["DATABASE_URL"] = f"postgresql://litellm:{postgres_password}@db:5432/litellm"
         os.environ["CLICKHOUSE_URL"] = f"http://default:{clickhouse_password}@clickhouse:8123"
-        os.execv("docker/prod_entrypoint.sh", ["docker/prod_entrypoint.sh", *sys.argv[1:]])
+        os.execv("/app/docker-entrypoint.sh", ["/app/docker-entrypoint.sh", *sys.argv[1:]])
     command: ["--config", "/app/lens-config.yaml", "--port", "4000"]
     environment:
       LITELLM_MASTER_KEY: ${LITELLM_MASTER_KEY:?Set a strong master key}
