@@ -14,8 +14,8 @@ use crate::{
     anthropic::{
         chat::handler::ModelResponseIterator,
         common_utils::{
-            API_KEY_PLACEMENT, complete_anthropic_url, forwarded_oauth_bearer,
-            resolve_anthropic_api_key,
+            API_KEY_PLACEMENT, DEFAULT_ANTHROPIC_HEADERS, complete_anthropic_url,
+            forwarded_oauth_bearer, resolve_anthropic_api_key,
         },
     },
     base_llm::{
@@ -199,10 +199,7 @@ impl BaseConfig for AnthropicConfig {
     }
 
     fn default_headers(&self) -> &'static [(&'static str, &'static str)] {
-        &[
-            ("anthropic-version", "2023-06-01"),
-            ("content-type", "application/json"),
-        ]
+        DEFAULT_ANTHROPIC_HEADERS
     }
 
     /// An OAuth bearer is the whole credential: Python's `validate_environment`

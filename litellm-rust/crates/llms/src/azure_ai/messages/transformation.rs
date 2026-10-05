@@ -7,10 +7,11 @@ use litellm_llms_types::formats::messages::{
 
 use crate::{
     Error,
-    anthropic::messages::{
-        handler::shape_anthropic_messages_request,
-        transformation::{
-            DEFAULT_HEADERS, transform_messages_request, update_headers_with_anthropic_beta,
+    anthropic::{
+        common_utils::DEFAULT_ANTHROPIC_HEADERS,
+        messages::{
+            handler::shape_anthropic_messages_request,
+            transformation::{transform_messages_request, update_headers_with_anthropic_beta},
         },
     },
     azure_ai::common_utils::{
@@ -102,7 +103,7 @@ impl BaseMessagesConfig for AzureAnthropicMessagesConfig {
     }
 
     fn default_headers(&self) -> &'static [(&'static str, &'static str)] {
-        DEFAULT_HEADERS
+        DEFAULT_ANTHROPIC_HEADERS
     }
 
     fn request_headers(&self, headers: Headers, request: &MessagesRequest) -> Headers {
