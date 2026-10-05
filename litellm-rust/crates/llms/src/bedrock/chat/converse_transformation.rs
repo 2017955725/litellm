@@ -5,7 +5,7 @@ use litellm_auth_aws::{
     resolve_bedrock_region,
 };
 use litellm_core_utils::{
-    core_helpers::{finish_reason_for, unix_now, usage_from_parts},
+    core_helpers::unix_now,
     prompt_templates::factory::{Conversation, TurnRole, build_conversation},
 };
 use litellm_llms_types::formats::chat_completions::{
@@ -20,6 +20,7 @@ use crate::{
     base_llm::{
         auth::AuthScheme,
         chat::{
+            normalization::{finish_reason_for, usage_from_parts},
             streaming::StreamShape,
             transformation::{
                 BaseConfig, Headers, ProviderChatRequestData, ProviderChatResponseData,

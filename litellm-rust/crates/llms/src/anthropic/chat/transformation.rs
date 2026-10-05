@@ -1,6 +1,6 @@
 use litellm_auth::SecretValue;
 use litellm_core_utils::{
-    core_helpers::{finish_reason_for, unix_now, usage_from_parts},
+    core_helpers::unix_now,
     prompt_templates::factory::{Conversation, build_conversation},
 };
 use litellm_llms_types::formats::chat_completions::{
@@ -21,6 +21,7 @@ use crate::{
     base_llm::{
         auth::AuthScheme,
         chat::{
+            normalization::{finish_reason_for, usage_from_parts},
             streaming::{ChatStream, StreamShape},
             transformation::{
                 BaseConfig, Headers, ProviderChatRequestData, ProviderChatResponseData,
