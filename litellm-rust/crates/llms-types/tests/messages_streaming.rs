@@ -35,3 +35,68 @@ fn stream_events_preserve_extensible_fields(#[case] wire: Value) {
 fn malformed_or_unrecognized_events_remain_rejected(#[case] wire: Value) {
     assert!(serde_json::from_value::<MessagesStreamEvent>(wire).is_err());
 }
+
+#[rstest]
+#[case::text(json!({"type":"content_block_delta","index":0,"future_event":null,"delta":{"type":"text_delta","text":"hi","future_delta":[1,null]}}))]
+#[case::json(json!({"type":"content_block_delta","index":0,"future_event":true,"delta":{"type":"input_json_delta","partial_json":"{","future_delta":true}}))]
+#[case::citations(json!({"type":"content_block_delta","index":0,"delta":{"type":"citations_delta","citation":{"type":"page_location","cited_text":"doc","document_title":null,"start_page_number":1,"end_page_number":2},"future_delta":true}}))]
+#[case::thinking(json!({"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"reasoning","future_delta":true}}))]
+#[case::signature(json!({"type":"content_block_delta","index":0,"delta":{"type":"signature_delta","signature":"signed","future_delta":true}}))]
+#[case::compaction(json!({"type":"content_block_delta","index":0,"delta":{"type":"compaction_delta","content":"summary","future_delta":true}}))]
+#[case::block_start(json!({"type":"content_block_start","index":0,"content_block":{"type":"compaction","content":null},"future_event":true}))]
+#[case::block_stop(json!({"type":"content_block_stop","index":0,"future_event":true}))]
+#[case::message_delta(json!({"type":"message_delta","delta":{"stop_details":null,"safeguard_results":[{"future":null}]},"context_management":{"applied_edits":[]},"usage":{"iterations":[{"type":"message","input_tokens":2,"output_tokens":1}]},"future_event":true}))]
+#[case::message_stop(json!({"type":"message_stop","future_event":true}))]
+#[case::ping(json!({"type":"ping","future_event":true}))]
+#[case::error(json!({"type":"error","error":{"type":"future","message":"error"},"future_event":true}))]
+fn stream_events_and_deltas_preserve_extensions(#[case] wire: Value) {
+    let parsed: MessagesStreamEvent = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+}
+
+#[rstest]
+#[case::text(json!({"type":"text_delta","text":17}))]
+#[case::thinking(json!({"type":"thinking_delta","thinking":null}))]
+#[case::future(json!({"type":"future_delta","payload":true}))]
+fn malformed_and_unknown_deltas_remain_rejected(#[case] delta: Value) {
+    assert!(
+        serde_json::from_value::<MessagesStreamEvent>(
+            json!({"type":"content_block_delta","index":0,"delta":delta})
+        )
+        .is_err()
+    );
+}
+
+#[rstest]
+#[case::wrong_known_field(json!({"type":"text","text":17}), false)]
+#[case::missing_type(json!({"text":"hi"}), false)]
+#[case::opaque_tool_id(json!({"type":"future","tool_use_id":17}), true)]
+#[case::opaque_cache_control(json!({"type":"future","cache_control":17}), true)]
+#[case::nullable_fields(json!({"type":"tool_use","id":null,"name":null,"input":null,"text":null}), true)]
+fn stream_block_validation_keeps_its_existing_boundary(
+    #[case] block: Value,
+    #[case] accepted: bool,
+) {
+    let wire = json!({"type":"content_block_start","index":0,"content_block":block});
+    let parsed = serde_json::from_value::<MessagesStreamEvent>(wire.clone());
+    assert_eq!(parsed.is_ok(), accepted);
+    if let Ok(parsed) = parsed {
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+}
+
+#[rstest]
+#[case::wrong_count(json!({"input_tokens":"many"}), false)]
+#[case::nullable_counts(json!({"input_tokens":null,"output_tokens":null,"cache_creation_input_tokens":null,"cache_read_input_tokens":null}), true)]
+#[case::unknown_iterations(json!({"iterations":[{"type":"future","input_tokens":17}]}), true)]
+fn stream_usage_validation_keeps_its_existing_boundary(
+    #[case] usage: Value,
+    #[case] accepted: bool,
+) {
+    let wire = json!({"type":"message_delta","delta":{"stop_reason":null,"stop_sequence":null},"usage":usage});
+    let parsed = serde_json::from_value::<MessagesStreamEvent>(wire.clone());
+    assert_eq!(parsed.is_ok(), accepted);
+    if let Ok(parsed) = parsed {
+        assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+    }
+}

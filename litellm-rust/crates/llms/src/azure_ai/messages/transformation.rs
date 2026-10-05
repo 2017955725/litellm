@@ -132,10 +132,17 @@ pub fn complete_azure_anthropic_url(
 
 fn strip_scope_from_block(block: ContentBlock) -> ContentBlock {
     ContentBlock {
-        cache_control: block.cache_control.map(|cache_control| CacheControl {
-            scope: None,
-            ..cache_control
-        }),
+        cache_control: block
+            .cache_control
+            .map(|cache_control| match cache_control {
+                litellm_llms_types::serde_compat::Nullable::Value(cache_control) => {
+                    litellm_llms_types::serde_compat::Nullable::Value(CacheControl {
+                        scope: None,
+                        ..cache_control
+                    })
+                }
+                other => other,
+            }),
         ..block
     }
 }

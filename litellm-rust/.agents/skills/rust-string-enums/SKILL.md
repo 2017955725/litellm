@@ -5,7 +5,7 @@ description: Define or refactor Rust string-valued enums and their Serde adapter
 
 # Rust string enums
 
-Use this skill when adding or changing enums represented by a single string, or surveying handwritten string conversions. The [survey](references/survey.md) records the migration candidates found on 2026-10-05. Recheck the current source before using that inventory
+Use this skill when adding or changing enums represented by a single string, or surveying handwritten string conversions
 
 ## Choose the representation
 

@@ -1,3 +1,9 @@
+pub use super::chat_content::{
+    ChatContentPart, ChatFile, ChatInputAudio, ChatLogprobs, ChatMediaUrl, ChatMediaUrlParameters,
+    ChatTokenLogprob, ChatTopLogprob, ChatVideoMetadata,
+};
+use crate::formats::messages::CacheControl;
+use crate::recognized::Recognized;
 use serde_json::{Map, Value};
 use strum::IntoStaticStr;
 
@@ -42,7 +48,7 @@ impl ReasoningEffort {
 #[serde(untagged)]
 pub enum ChatMessageContent {
     Text(String),
-    Parts(Vec<Value>),
+    Parts(Vec<Recognized<ChatContentPart>>),
 }
 
 #[macro_rules_attribute::apply(wire_type)]
@@ -84,13 +90,13 @@ pub enum ChatCompletionThinkingBlock {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         signature: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        cache_control: Option<Value>,
+        cache_control: Option<Recognized<CacheControl>>,
     },
     RedactedThinking {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         data: Option<String>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
-        cache_control: Option<Value>,
+        cache_control: Option<Recognized<CacheControl>>,
     },
 }
 
@@ -169,7 +175,7 @@ pub struct ChatCompletionStreamingChoice {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finish_reason: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub logprobs: Option<Value>,
+    pub logprobs: Option<Recognized<ChatLogprobs>>,
 }
 
 #[macro_rules_attribute::apply(wire_type)]

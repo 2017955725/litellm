@@ -402,6 +402,116 @@ async fn an_invalid_cached_envelope_is_replaced_by_a_provider_result(#[case] poi
     assert_eq!(calls.load(Ordering::SeqCst), 1);
 }
 
+#[rstest]
+#[case::chat_completion(json!({"kind":"Response","value":{"id":"chat-1","model":"test","choices":[],"usage":{"prompt_tokens":3,"completion_tokens":2}}}))]
+#[case::wrong_envelope(json!({"kind":"Stream","value":"data: [DONE]\n\n"}))]
+#[tokio::test]
+async fn responses_refetches_instead_of_deserializing_another_api_response(
+    #[case] poisoned: Value,
+) {
+    use litellm_inference_responses::route::Responses;
+    use litellm_llms_types::formats::responses::ResponsesApiResponse;
+
+    let cache: Arc<dyn ResponseCacheService> = Arc::new(InvalidEntryCache(
+        ResponseCache::new(Arc::new(InMemoryCache::default())),
+        serde_json::to_value(ResponseEnvelope::new("responses", poisoned)).unwrap(),
+    ));
+    let calls = AtomicUsize::new(0);
+    for _ in 0..2 {
+        let response = execute_unary::<Responses, _, _>(
+            cache_request(json!({"input":"hello"})),
+            Some(cache.clone()),
+            Some(CacheOptions::new(CacheScope::Shared)),
+            &(),
+            None,
+            || async {
+                calls.fetch_add(1, Ordering::SeqCst);
+                Ok(ResponsesApiResponse {
+                    id: "fresh-response".into(),
+                    model: "test".into(),
+                    output: vec![
+                        serde_json::from_value(json!({"type":"message","content":[{"type":"output_text","text":"fresh"}]})).unwrap(),
+                    ],
+                    extra: [("status".into(), json!("completed"))]
+                        .into_iter()
+                        .collect(),
+                })
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(response.id, "fresh-response");
+        assert_eq!(
+            serde_json::to_value(&response.output[0]).unwrap()["content"][0]["text"],
+            "fresh"
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+}
+
+#[rstest]
+#[case::system("system", json!("answer ALPHA"), json!("answer BETA"))]
+#[case::stop_sequences("stop_sequences", json!(["STOP"]), json!(["END"]))]
+#[case::top_k("top_k", json!(5), json!(10))]
+#[case::tools("tools", json!([{"name":"a","input_schema":{"type":"object"}}]), json!([{"name":"b","input_schema":{"type":"object"}}]))]
+#[case::tool_choice("tool_choice", json!({"type":"auto"}), json!({"type":"none"}))]
+#[tokio::test]
+async fn messages_cache_identity_includes_provider_native_parameters(
+    cache: Arc<dyn ResponseCacheService>,
+    #[case] field: &str,
+    #[case] original: Value,
+    #[case] changed: Value,
+) {
+    use litellm_inference_messages::route::Messages;
+    use litellm_llms_types::formats::messages::MessagesResponse;
+
+    let calls = AtomicUsize::new(0);
+    for (value, expected_call) in [(original.clone(), 0), (changed, 1), (original, 0)] {
+        let response =
+            execute_unary::<Messages, _, _>(
+                CacheRequest::from_wire(
+                    ProviderIdentity {
+                        model: "test".into(),
+                        provider: "anthropic".into(),
+                    },
+                    Some(&WireRequest {
+                        url: "https://example.test/v1/messages".into(),
+                        headers: vec![],
+                        body: json!({
+                            "model":"test", "messages":[{"role":"user","content":"hello"}],
+                            "max_tokens":32, (field):value
+                        }),
+                    }),
+                ),
+                Some(cache.clone()),
+                Some(CacheOptions::new(CacheScope::Shared)),
+                &(),
+                None,
+                || async {
+                    let call = calls.fetch_add(1, Ordering::SeqCst);
+                    Ok(Box::new(serde_json::from_value::<MessagesResponse>(json!({
+                    "id":call.to_string(), "type":"message", "role":"assistant", "model":"test",
+                    "content":[{"type":"text","text":format!("answer {call}")}],
+                    "stop_reason":"end_turn", "stop_sequence":null
+                })).unwrap()))
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.id, expected_call.to_string());
+        assert_eq!(
+            response.content[0]
+                .known()
+                .unwrap()
+                .text
+                .as_ref()
+                .and_then(litellm_llms_types::serde_compat::Nullable::as_deref),
+            Some(format!("answer {expected_call}").as_str())
+        );
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
+
 struct UnavailableCache;
 
 impl litellm_cache::BaseCache for UnavailableCache {

@@ -185,12 +185,20 @@ fn context_management_betas(
 }
 
 fn uses_structured_output(params: &MessagesOptionalParams) -> bool {
-    params.output_format.is_some()
+    params
+        .output_format
+        .as_ref()
+        .is_some_and(|value| !matches!(value, Recognized::Unrecognized(Value::Null)))
         || params
             .output_config
             .as_ref()
             .and_then(Recognized::known)
-            .is_some_and(|config| config.format.is_some())
+            .is_some_and(|config| {
+                config
+                    .format
+                    .as_ref()
+                    .is_some_and(|value| !matches!(value, Recognized::Unrecognized(Value::Null)))
+            })
 }
 
 fn messages_carry_output_config(messages: &[Message]) -> bool {
@@ -939,6 +947,8 @@ mod tests {
 
     #[rstest]
     #[case::no_features(json!({}), &[])]
+    #[case::null_output_format(json!({"output_format":null}), &[])]
+    #[case::null_output_config_format(json!({"output_config":{"format":null}}), &[])]
     #[case::output_format(json!({"output_format": {"type": "json_schema"}}), &["structured-outputs-2025-11-13"])]
     #[case::null_output_format(json!({"output_format": null}), &[])]
     #[case::output_config_format(
