@@ -1,0 +1,3 @@
+- [Messages API](https://platform.minimax.io/docs/api-reference/text-chat-anthropic)
+- [Messages API, Markdown](https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md)
+- [MiniMax documentation index, llms.txt](https://platform.minimax.io/docs/llms.txt)

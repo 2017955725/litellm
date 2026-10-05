@@ -1,0 +1,3 @@
+- [Claude Messages request and response](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html)
+- [Claude Messages request and response, Markdown](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.md)
+- [Bedrock documentation index, llms.txt](https://docs.aws.amazon.com/bedrock/latest/userguide/llms.txt)

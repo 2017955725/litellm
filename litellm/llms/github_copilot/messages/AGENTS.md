@@ -1,0 +1,3 @@
+- [Copilot SDK events mentioning /v1/messages, not a full HTTP API specification](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/streaming-events)
+- [Copilot SDK events, Markdown](https://docs.github.com/api/article/body?pathname=/en/copilot/how-tos/copilot-sdk/features/streaming-events)
+- [GitHub documentation index, llms.txt](https://docs.github.com/llms.txt)

@@ -1,0 +1,3 @@
+- [Native Anthropic Messages API, including Mantle](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.html)
+- [Native Anthropic Messages API, Markdown](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.md)
+- [Bedrock documentation index, llms.txt](https://docs.aws.amazon.com/bedrock/latest/userguide/llms.txt)

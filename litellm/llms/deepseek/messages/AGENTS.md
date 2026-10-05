@@ -1,0 +1,1 @@
+- [Anthropic API compatibility guide](https://api-docs.deepseek.com/guides/anthropic_api/)
