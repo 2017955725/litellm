@@ -10,6 +10,7 @@ Bearer/SigV4 auth chain, and the wire request through the public entrypoint.
 """
 
 import json
+from typing import Final
 from unittest.mock import MagicMock
 
 import httpx
@@ -496,3 +497,10 @@ class TestBetaHeadersOnTheWire:
         body = _sent_body(route)
         assert body["tools"] == tools
         assert body["tool_choice"] == {"type": "auto"}
+
+
+@pytest.mark.parametrize("suffix", ("", "/anthropic", "/anthropic/", "/anthropic/v1", "/anthropic/v1/messages"))
+def test_mantle_sdk_base_preserves_custom_host_and_prefix(suffix: str) -> None:
+    base: Final = "https://mantle.example/gateway"
+    url: Final = build_mantle_native_messages_url(f"{base}{suffix}", {})
+    assert url == f"{base}{MESSAGES_PATH}"

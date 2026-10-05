@@ -1,3 +1,5 @@
+from typing import Final
+
 import litellm
 from litellm.llms.anthropic.pass_through.messages.transformation import (
     AnthropicMessagesConfig,
@@ -5,6 +7,7 @@ from litellm.llms.anthropic.pass_through.messages.transformation import (
 from litellm.llms.tencent.messages.transformation import (
     TencentAnthropicMessagesConfig,
 )
+from litellm.types.router import GenericLiteLLMParams
 from litellm.utils import ProviderConfigManager
 
 
@@ -171,3 +174,21 @@ def test_validate_environment_preserves_existing_headers():
     assert headers["authorization"] == "Bearer existing"
     assert headers["anthropic-version"] == "2024-01-01"
     assert "x-api-key" not in headers
+
+
+def test_tencent_preserves_native_adaptive_thinking_and_effort() -> None:
+    thinking: Final = {"type": "adaptive"}
+    output_config: Final = {"effort": "high"}
+    payload: Final = TencentAnthropicMessagesConfig().transform_anthropic_messages_request(
+        model="deepseek-v4-pro",
+        messages=[{"role": "user", "content": "hello"}],
+        anthropic_messages_optional_request_params={
+            "max_tokens": 4096,
+            "thinking": thinking,
+            "output_config": output_config,
+        },
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+    assert payload["thinking"] == thinking
+    assert payload["output_config"] == output_config

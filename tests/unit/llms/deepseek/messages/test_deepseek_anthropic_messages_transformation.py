@@ -1,3 +1,5 @@
+from typing import Final
+
 import litellm
 from litellm.llms.anthropic.pass_through.messages.transformation import (
     AnthropicMessagesConfig,
@@ -187,3 +189,24 @@ def test_deepseek_anthropic_messages_preserves_thinking_and_sanitizes_custom_too
         "input_schema": {"type": "object"},
     }
     assert request["tools"][1]["type"] == "web_search_20260209"
+
+
+def test_deepseek_preserves_native_effort_and_sampling() -> None:
+    thinking: Final = {"type": "enabled", "budget_tokens": 2048}
+    output_config: Final = {"effort": "high"}
+    temperature: Final = 0.5
+    payload: Final = DeepSeekAnthropicMessagesConfig().transform_anthropic_messages_request(
+        model="deepseek-v4-pro",
+        messages=[{"role": "user", "content": "hello"}],
+        anthropic_messages_optional_request_params={
+            "max_tokens": 4096,
+            "thinking": thinking,
+            "output_config": output_config,
+            "temperature": temperature,
+        },
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+    assert payload["thinking"] == thinking
+    assert payload["output_config"] == output_config
+    assert payload["temperature"] == temperature

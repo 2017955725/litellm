@@ -60,6 +60,9 @@ class OpenAILikeAnthropicMessagesConfig(AnthropicMessagesConfig):
         )
         return merged, api_base
 
+    def uses_anthropic_thinking_semantics(self) -> bool:
+        return False
+
     def should_filter_anthropic_beta_headers(self) -> bool:
         return False
 

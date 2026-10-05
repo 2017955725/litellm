@@ -31,6 +31,9 @@ class MinimaxMessagesConfig(AnthropicMessagesConfig):
     def should_strip_billing_metadata(self) -> bool:
         return True
 
+    def uses_anthropic_thinking_semantics(self) -> bool:
+        return False
+
     @staticmethod
     def get_api_key(api_key: str | None = None) -> str | None:
         """
@@ -82,15 +85,8 @@ class MinimaxMessagesConfig(AnthropicMessagesConfig):
         Get the complete URL for MiniMax API.
         Override to ensure we use MiniMax's endpoint, not Anthropic's.
         """
-        # Get the base URL (either provided or default MiniMax endpoint)
-        base_url: Final = self.get_api_base(api_base=api_base)
-
-        # If the base URL already includes the full path, return it
+        base_url: Final = self.get_api_base(api_base=api_base).rstrip("/")
         if base_url.endswith("/v1/messages"):
             return base_url
-
-        # Otherwise append the messages endpoint
-        if base_url.endswith("/"):
-            return f"{base_url}v1/messages"
-        else:
-            return f"{base_url}/v1/messages"
+        unversioned: Final = base_url.removesuffix("/v1")
+        return f"{unversioned}/v1/messages"

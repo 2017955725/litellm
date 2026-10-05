@@ -7,6 +7,7 @@ association via `aws_bedrock_project_id`.
 """
 
 import json
+from typing import Final
 from unittest.mock import patch
 
 import httpx
@@ -796,3 +797,16 @@ async def test_mantle_anthropic_messages_streaming_sends_stream_and_passes_throu
     assert "event: message_start" in text
     assert '"text": "pong"' in text
     assert "event: message_stop" in text
+
+
+@pytest.mark.parametrize("suffix", ("", "/anthropic", "/anthropic/", "/anthropic/v1", "/anthropic/v1/messages"))
+def test_bedrock_mantle_messages_accepts_sdk_base(suffix: str) -> None:
+    base: Final = "https://mantle.example/gateway"
+    url: Final = AmazonMantleMessagesConfig().get_complete_url(
+        api_base=f"{base}{suffix}",
+        api_key=None,
+        model="mantle/anthropic.claude-sonnet-5",
+        optional_params={"aws_region_name": "us-east-1"},
+        litellm_params={},
+    )
+    assert url == f"{base}/anthropic/v1/messages"

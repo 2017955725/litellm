@@ -36,6 +36,9 @@ class EdenAIAnthropicMessagesConfig(JSONProviderAnthropicMessagesConfig):
     def __init__(self) -> None:
         super().__init__(_EDENAI_PROVIDER)
 
+    def supports_cache_control_ttl(self) -> bool:
+        return True
+
     def validate_anthropic_messages_environment(
         self,
         headers: dict[str, str],  # mutable-ok: inherited contract

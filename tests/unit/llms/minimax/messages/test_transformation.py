@@ -2,10 +2,13 @@
 Test MiniMax Anthropic-compatible API support
 """
 
-from unittest.mock import MagicMock, patch
+from typing import Final
+
+import pytest
 
 import litellm
 from litellm.llms.minimax.messages.transformation import MinimaxMessagesConfig
+from litellm.types.router import GenericLiteLLMParams
 
 
 def test_minimax_anthropic_config():
@@ -98,3 +101,35 @@ def test_minimax_messages_explicit_key_wins_over_env(monkeypatch):
         api_key="param-key",
     )
     assert headers["x-api-key"] == "param-key"
+
+
+@pytest.mark.parametrize("suffix", ("", "/", "/v1", "/v1/", "/v1/messages", "/v1/messages/"))
+def test_minimax_messages_url_normalizes_versioned_base(suffix: str) -> None:
+    base: Final = "https://minimax.example/anthropic"
+    url: Final = MinimaxMessagesConfig().get_complete_url(
+        api_base=f"{base}{suffix}",
+        api_key=None,
+        model="MiniMax-M3.1-Flash-Preview",
+        optional_params={},
+        litellm_params={},
+    )
+    assert url == f"{base}/v1/messages"
+
+
+@pytest.mark.parametrize("thinking_type", ("adaptive", "disabled"))
+def test_minimax_preserves_native_thinking_and_effort(thinking_type: str) -> None:
+    thinking: Final = {"type": thinking_type}
+    output_config: Final = {"effort": "high"}
+    payload: Final = MinimaxMessagesConfig().transform_anthropic_messages_request(
+        model="MiniMax-M3.1-Flash-Preview",
+        messages=[{"role": "user", "content": "hello"}],
+        anthropic_messages_optional_request_params={
+            "max_tokens": 4096,
+            "thinking": thinking,
+            "output_config": output_config,
+        },
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+    assert payload["thinking"] == thinking
+    assert payload["output_config"] == output_config

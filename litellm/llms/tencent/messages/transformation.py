@@ -30,6 +30,9 @@ class TencentAnthropicMessagesConfig(AnthropicMessagesConfig):
     def should_strip_billing_metadata(self) -> bool:
         return True
 
+    def uses_anthropic_thinking_semantics(self) -> bool:
+        return False
+
     @staticmethod
     def get_api_key(api_key: str | None = None) -> str | None:
         return api_key or get_secret_str("TENCENT_API_KEY") or litellm.api_key

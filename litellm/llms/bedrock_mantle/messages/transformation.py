@@ -20,6 +20,7 @@ _BASE_SUFFIXES_TO_STRIP: Final = (
     "/anthropic/v1",
     "/openai/v1",
     "/v1",
+    "/anthropic",
 )
 
 

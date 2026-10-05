@@ -102,6 +102,9 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
             # "metadata",
         ]
 
+    def uses_anthropic_thinking_semantics(self) -> bool:
+        return True
+
     def should_filter_anthropic_beta_headers(self) -> bool:
         return self._resolved_provider != "anthropic"
 
@@ -594,30 +597,31 @@ class AnthropicMessagesConfig(BaseAnthropicMessagesConfig):
             custom_llm_provider=self._resolved_provider,
         )
 
-        AnthropicModelInfo.maybe_drop_disabled_thinking(
-            model=model,
-            optional_params=anthropic_messages_optional_request_params,
-            custom_llm_provider=self._resolved_provider,
-        )
+        if self.uses_anthropic_thinking_semantics():
+            AnthropicModelInfo.maybe_drop_disabled_thinking(
+                model=model,
+                optional_params=anthropic_messages_optional_request_params,
+                custom_llm_provider=self._resolved_provider,
+            )
 
-        AnthropicModelInfo.translate_legacy_thinking_for_adaptive_model(
-            model=model,
-            optional_params=anthropic_messages_optional_request_params,
-            custom_llm_provider=self._resolved_provider,
-        )
+            AnthropicModelInfo.translate_legacy_thinking_for_adaptive_model(
+                model=model,
+                optional_params=anthropic_messages_optional_request_params,
+                custom_llm_provider=self._resolved_provider,
+            )
 
-        self._translate_adaptive_effort_for_non_adaptive_model(
-            model=model,
-            optional_params=anthropic_messages_optional_request_params,
-            max_tokens=max_tokens,
-            custom_llm_provider=self._resolved_provider,
-        )
+            self._translate_adaptive_effort_for_non_adaptive_model(
+                model=model,
+                optional_params=anthropic_messages_optional_request_params,
+                max_tokens=max_tokens,
+                custom_llm_provider=self._resolved_provider,
+            )
 
-        self._drop_incompatible_temperature_for_thinking(
-            model=model,
-            optional_params=anthropic_messages_optional_request_params,
-            custom_llm_provider=self._resolved_provider,
-        )
+            self._drop_incompatible_temperature_for_thinking(
+                model=model,
+                optional_params=anthropic_messages_optional_request_params,
+                custom_llm_provider=self._resolved_provider,
+            )
 
         system_param: Final = anthropic_messages_optional_request_params.get("system")
         if self.should_strip_billing_metadata() and system_param is not None:

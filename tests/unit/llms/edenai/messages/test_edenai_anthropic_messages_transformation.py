@@ -6,6 +6,7 @@ import asyncio
 import json
 import time
 import uuid
+from typing import Final
 
 import httpx
 import pytest
@@ -15,6 +16,7 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.litellm_logging import Logging
 from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
 from litellm.llms.edenai.messages.transformation import EdenAIAnthropicMessagesConfig
+from litellm.types.router import GenericLiteLLMParams
 from litellm.types.utils import LlmProviders
 from litellm.utils import ProviderConfigManager
 
@@ -245,3 +247,27 @@ class TestErrors:
 
         with pytest.raises(litellm.AuthenticationError, match="Invalid token"):
             await litellm.anthropic.messages.acreate(model=MODEL, max_tokens=16, messages=MESSAGES)
+
+
+@pytest.mark.parametrize("ttl", ("5m", "1h"))
+def test_eden_messages_preserves_cache_ttl(ttl: str) -> None:
+    messages: Final = [
+        {
+            "role": "user",
+            "content": [
+                {
+                    "type": "text",
+                    "text": "hello",
+                    "cache_control": {"type": "ephemeral", "ttl": ttl},
+                }
+            ],
+        }
+    ]
+    payload: Final = EdenAIAnthropicMessagesConfig().transform_anthropic_messages_request(
+        model="test-native-model",
+        messages=messages,
+        anthropic_messages_optional_request_params={"max_tokens": 16},
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+    assert payload["messages"] == messages

@@ -1,3 +1,5 @@
+from typing import Final
+
 import pytest
 
 from litellm.llms.anthropic.common_utils import AnthropicError
@@ -516,3 +518,25 @@ def test_request_strips_ttl_only_where_the_messages_api_defines_cache_control(co
     assert tool_result["content"][0]["cache_control"] == {"type": "ephemeral"}
     assert payload["messages"][1]["content"][1]["cache_control"] == {"type": "ephemeral"}
     assert payload["messages"][2] == {"role": "user", "content": "a plain string message"}
+
+
+@pytest.mark.parametrize("thinking_type", ("adaptive", "enabled", "disabled"))
+def test_native_thinking_fields_do_not_depend_on_litellm_model_registration(
+    config: OpenAILikeAnthropicMessagesConfig,
+    thinking_type: str,
+) -> None:
+    thinking: Final = {"type": thinking_type}
+    output_config: Final = {"effort": "high"}
+    payload: Final = config.transform_anthropic_messages_request(
+        model="unregistered-native-model",
+        messages=[{"role": "user", "content": "hello"}],
+        anthropic_messages_optional_request_params={
+            "max_tokens": 4096,
+            "thinking": thinking,
+            "output_config": output_config,
+        },
+        litellm_params=GenericLiteLLMParams(),
+        headers={},
+    )
+    assert payload["thinking"] == thinking
+    assert payload["output_config"] == output_config

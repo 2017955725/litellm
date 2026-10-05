@@ -1068,7 +1068,12 @@ def build_mantle_messages_url(
         base: Final = override.rstrip("/")
         if base.endswith(MANTLE_MESSAGES_PATH):
             return base
-        return f"{base}{MANTLE_MESSAGES_PATH}"
+        suffixes: Final = ("/anthropic/v1", "/anthropic")
+        unversioned: Final = next(
+            (base[: -len(suffix)] for suffix in suffixes if base.endswith(suffix)),
+            base,
+        )
+        return f"{unversioned}{MANTLE_MESSAGES_PATH}"
     return f"https://bedrock-mantle.{region}.api.aws{MANTLE_MESSAGES_PATH}"
 
 
