@@ -431,6 +431,7 @@ async def test_decisions_cost_is_in_standard_logging_object(respx_mock: respx.Mo
     assert recording_logger.standard_logging_object["response_cost"] == pytest.approx(expected_cost)
     assert recording_logger.standard_logging_object["prompt_tokens"] == _INPUT_TOKENS
     assert recording_logger.standard_logging_object["completion_tokens"] == _OUTPUT_TOKENS
+    assert recording_logger.standard_logging_object["messages"] == [{"role": "user", "content": _INPUT}]
 
 
 @pytest.mark.asyncio
