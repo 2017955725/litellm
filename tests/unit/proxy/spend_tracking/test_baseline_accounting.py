@@ -185,13 +185,31 @@ def test_invalid_usage_and_invalid_count_plan_cannot_seed_cache() -> None:
     assert _replay(_observation("bad", plan=broken))[0].usage is None
 
 
-@pytest.mark.parametrize("policy", ("anthropic", "estimated"))
-def test_duration_pricing_rejects_short_lived_prefix_before_long_lived_suffix(policy: str) -> None:
-    plan: Final = CountedPromptCachePlan(6200, (_marker("early", 300, 3000), _marker("last", 3600, 6000)))
-    observation: Final = _observation("invalid", plan=plan, cache_policy=policy, cache_write_pricing="duration")
-    history, estimates = advance_baseline_history(BaselineHistory(), (observation,))
-    assert estimates[0].usage is None and estimates[0].reason == "unsupported_cache_plan"
-    assert not history.entries
+def test_overlapping_uncertain_request_cannot_be_warmed_by_a_later_callback() -> None:
+    uncertain: Final = _observation("incomplete", outcome="uncertain", available_at=10010.0)
+    overlap: Final = _observation("overlap", 10001.0)
+    during: Final = _observation("during", 10002.0)
+    after: Final = _observation("after", 10011.0)
+    warmed: Final = _observation("warmed", 10012.0)
+    estimates: Final = _replay(uncertain, overlap, during, after, warmed)
+    assert estimates[1].reason == estimates[2].reason == "concurrent_uncertainty"
+    assert estimates[3].usage is None
+    assert estimates[4].usage is not None and estimates[4].usage.prompt_tokens_details.cached_tokens == 6000
+
+
+def test_modeled_read_cannot_recharge_the_original_private_write_count() -> None:
+    warm: Final = _replay(_observation("initial", baseline_equivalent=True), _observation("warm", 10001.0))[-1]
+    assert warm.usage is not None
+    prices: Final = {
+        **litellm.get_model_info("claude-opus-5", custom_llm_provider="anthropic"),
+        "input_cost_per_token": 1e-6,
+        "output_cost_per_token": 2e-6,
+        "cache_read_input_token_cost": 1e-7,
+        "cache_creation_input_token_cost": 1.25e-6,
+        "provider_specific_entry": {"fast": 2.0, "us": 1.1},
+    }
+    input_cost, output_cost = cost_per_token("claude-opus-5", warm.usage, model_info=prices)
+    assert input_cost + output_cost == pytest.approx((200 * 1e-6 + 6000 * 1e-7 + 30 * 2e-6) * 2.0 * 1.1)
 
 
 def test_mixed_lifetime_lookback_preserves_a_compatible_native_hit() -> None:
@@ -233,28 +251,10 @@ def test_short_lifetime_hit_cannot_seed_an_unpaid_long_lifetime_entry() -> None:
     assert after_expiry.usage.prompt_tokens_details.cache_creation_token_details.ephemeral_1h_input_tokens == 4600
 
 
-def test_overlapping_uncertain_request_cannot_be_warmed_by_a_later_callback() -> None:
-    uncertain: Final = _observation("incomplete", outcome="uncertain", available_at=10010.0)
-    overlap: Final = _observation("overlap", 10001.0)
-    during: Final = _observation("during", 10002.0)
-    after: Final = _observation("after", 10011.0)
-    warmed: Final = _observation("warmed", 10012.0)
-    estimates: Final = _replay(uncertain, overlap, during, after, warmed)
-    assert estimates[1].reason == estimates[2].reason == "concurrent_uncertainty"
-    assert estimates[3].usage is None
-    assert estimates[4].usage is not None and estimates[4].usage.prompt_tokens_details.cached_tokens == 6000
-
-
-def test_modeled_read_cannot_recharge_the_original_private_write_count() -> None:
-    warm: Final = _replay(_observation("initial", baseline_equivalent=True), _observation("warm", 10001.0))[-1]
-    assert warm.usage is not None
-    prices: Final = {
-        **litellm.get_model_info("claude-opus-5", custom_llm_provider="anthropic"),
-        "input_cost_per_token": 1e-6,
-        "output_cost_per_token": 2e-6,
-        "cache_read_input_token_cost": 1e-7,
-        "cache_creation_input_token_cost": 1.25e-6,
-        "provider_specific_entry": {"fast": 2.0, "us": 1.1},
-    }
-    input_cost, output_cost = cost_per_token("claude-opus-5", warm.usage, model_info=prices)
-    assert input_cost + output_cost == pytest.approx((200 * 1e-6 + 6000 * 1e-7 + 30 * 2e-6) * 2.0 * 1.1)
+@pytest.mark.parametrize("policy", ("anthropic", "estimated"))
+def test_duration_pricing_rejects_short_lived_prefix_before_long_lived_suffix(policy: str) -> None:
+    plan: Final = CountedPromptCachePlan(6200, (_marker("early", 300, 3000), _marker("last", 3600, 6000)))
+    observation: Final = _observation("invalid", plan=plan, cache_policy=policy, cache_write_pricing="duration")
+    history, estimates = advance_baseline_history(BaselineHistory(), (observation,))
+    assert estimates[0].usage is None and estimates[0].reason == "unsupported_cache_plan"
+    assert not history.entries
