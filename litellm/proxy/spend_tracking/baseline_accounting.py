@@ -8,15 +8,16 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from itertools import groupby
+from itertools import accumulate, groupby
 from math import isfinite
 from types import MappingProxyType
 from typing import Final, Literal
 
 from pydantic import ConfigDict, Field
 
+from litellm.litellm_core_utils.llm_cost_calc.utils import parse_prompt_tokens_details
 from litellm.llms.anthropic.prompt_cache_prediction import CountedBreakpoint, CountedPromptCachePlan
-from litellm.types.llms.base import LiteLLMBaseModel
+from litellm.types.llms.base import CachedTokensDetails, LiteLLMBaseModel
 from litellm.types.utils import CacheCreationTokenDetails, PromptTokensDetailsWrapper, Usage
 
 MAX_CACHE_TTL: Final = 3600
@@ -82,12 +83,24 @@ def _complete_usage(usage: Usage | None, policy: str = "anthropic") -> bool:
         return False
     split: Final = None if policy == "estimated" else details.cache_creation_token_details
     writes: Final = details.cache_creation_tokens or 0
+    modalities: Final = (details.audio_tokens or 0, details.image_tokens or 0, details.video_tokens or 0)
+    if policy == "estimated":
+        parsed: Final = parse_prompt_tokens_details(usage)
+        return (
+            usage.total_tokens == usage.prompt_tokens + usage.completion_tokens
+            and min(modalities) >= 0
+            and sum(modalities) <= usage.prompt_tokens
+            and (details.cached_tokens or 0) + writes <= usage.prompt_tokens
+            and sum(parsed[key] for key in ("text_tokens", "audio_tokens", "image_tokens", "video_tokens"))
+            + (details.cached_tokens or 0)
+            + writes
+            == usage.prompt_tokens
+        )
     return (
         usage.total_tokens == usage.prompt_tokens + usage.completion_tokens
         and sum(value or 0 for value in values) == usage.prompt_tokens
         and (
-            policy == "estimated"
-            or writes == 0
+            writes == 0
             or (
                 split is not None
                 and split.ephemeral_5m_input_tokens is not None
@@ -159,7 +172,7 @@ def _usage_with_cache(
 ) -> Usage:
     writes: Final = write_5m + write_1h + (generic_writes or 0)
     original_details: Final = usage.prompt_tokens_details or PromptTokensDetailsWrapper()
-    details: Final = original_details.model_copy(
+    remapped: Final = original_details.model_copy(
         deep=True,
         update=MappingProxyType(
             {
@@ -176,6 +189,7 @@ def _usage_with_cache(
             }
         ),
     )
+    details: Final = _modeled_modalities(remapped, total, read, writes)
     return Usage.model_validate(
         {
             **usage.model_dump(),
@@ -185,6 +199,34 @@ def _usage_with_cache(
             "cache_read_input_tokens": read,
             "cache_creation_input_tokens": writes,
         },
+    )
+
+
+def _modeled_modalities(
+    details: PromptTokensDetailsWrapper, total: int, read: int, writes: int
+) -> PromptTokensDetailsWrapper:
+    counts: Final = (details.audio_tokens or 0, details.image_tokens or 0, details.video_tokens or 0)
+    if total <= 0:
+        return details.model_copy(update={"cached_tokens_details": None})
+    boundaries: Final = tuple(accumulate(counts, initial=0))
+
+    def scale(tokens: int) -> tuple[int, ...]:
+        return tuple(
+            tokens * right // total - tokens * left // total for left, right in zip(boundaries, boundaries[1:])
+        )
+
+    audio, image, video = scale(total - read - writes)
+    cached_audio, cached_image, _ = scale(read)
+    return details.model_copy(
+        update={
+            "text_tokens": total - read - writes - audio - image - video,
+            "audio_tokens": audio + cached_audio,
+            "image_tokens": image + cached_image,
+            "video_tokens": video,
+            "cached_tokens_details": CachedTokensDetails(
+                audio_tokens=cached_audio, image_tokens=cached_image, text_tokens=0
+            ),
+        }
     )
 
 
@@ -353,7 +395,11 @@ def advance_baseline_history(
         if all(item.cache_policy == "estimated" for item in simultaneous)
         else max(history.uncertain_before, first)
     )
-    relevant: Final = tuple(item for item in simultaneous if item.outcome != "response_cache")
+    relevant: Final = tuple(
+        item
+        for item in simultaneous
+        if item.outcome != "response_cache" and not (item.cache_policy == "estimated" and item.plan is None)
+    )
     equivalent: Final = history.equivalent and all(item.baseline_equivalent for item in relevant)
     before: Final = BaselineHistory(
         first, history.last_at, equivalent, uncertain, history.entries, history.blocked_until

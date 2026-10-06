@@ -1,14 +1,15 @@
+from dataclasses import replace
 from typing import Final
 
 import pytest
 
 import litellm
+from litellm.llms.prompt_cache_estimation import estimate_cache_plan, normalize_cache_usage, prepare_cache_request
 from litellm.proxy.spend_tracking.baseline_accounting import (
     BaselineHistory,
     BaselineObservation,
     advance_baseline_history,
 )
-from litellm.proxy.spend_tracking.cache_history import estimate_cache_plan, normalize_cache_usage, prepare_cache_request
 from litellm.proxy.spend_tracking.savings import BaselineCostSnapshot, price_baseline_comparison
 from litellm.types.utils import ModelInfo, Usage
 
@@ -195,3 +196,125 @@ def test_explicit_system_and_tool_cache_writes_are_reused(key: str, block: dict[
     assert 0 < writes < first.usage.prompt_tokens
     assert replay[0].usage.prompt_tokens_details.cached_tokens == writes
     assert replay[0].usage.prompt_tokens_details.cache_creation_tokens == 0
+
+
+@pytest.mark.parametrize("modality", ("audio_tokens", "image_tokens", "video_tokens"))
+def test_multimodal_estimates_keep_history_and_price_cold_warm_expired_tokens(modality: str) -> None:
+    usage: Final = normalize_cache_usage(
+        Usage(
+            prompt_tokens=8000,
+            completion_tokens=20,
+            total_tokens=8020,
+            prompt_tokens_details={modality: 2000, "cached_tokens": 0, "cache_creation_tokens": 0},
+        )
+    )
+    first: Final = _observation(_request(), provider="gemini").model_copy(update={"usage": usage})
+    history, cold = advance_baseline_history(BaselineHistory(), (first,))
+    warmed, warm = advance_baseline_history(
+        history, (first.model_copy(update={"request_id": "warm", "started_at": 10002.0, "available_at": 10003.0}),)
+    )
+    _, expired = advance_baseline_history(
+        warmed, (first.model_copy(update={"request_id": "expired", "started_at": 12000.0, "available_at": 12001.0}),)
+    )
+    prices: Final[ModelInfo] = {
+        **_PRICES,
+        "cache_read_input_audio_token_cost": 0.002,
+        "input_cost_per_audio_token": 0.02,
+        "input_cost_per_image_token": 0.03,
+        "input_cost_per_video_token": 0.04,
+    }
+    snapshot: Final = BaselineCostSnapshot(
+        model="test-model", provider="gemini", prices=prices, actual_spend=100.0, actual_token_cost=100.0
+    )
+    for estimate, cost in (
+        (cold[0], 8000 * 0.017 + 20 * 0.03),
+        (warm[0], 6000 * 0.001 + 2000 * (0.002 if modality == "audio_tokens" else 0.001) + 20 * 0.03),
+        (expired[0], 8000 * 0.017 + 20 * 0.03),
+    ):
+        assert estimate.usage is not None, estimate.reason
+        assert (priced := price_baseline_comparison(snapshot, estimate.usage, estimate.provenance)) is not None
+        assert priced.baseline == pytest.approx(cost)
+
+
+@pytest.mark.parametrize(
+    "reason", ("estimation_capacity_exhausted", "baseline_estimation_timeout", "unsupported_cache_request")
+)
+def test_skipped_estimation_preserves_paid_cache_without_refreshing_it(reason: str) -> None:
+    first: Final = _observation(_request())
+    history, _ = advance_baseline_history(BaselineHistory(), (first,))
+    skipped: Final = first.model_copy(
+        update={"request_id": "skipped", "started_at": 10002.0, "available_at": 10003.0, "plan": None, "reason": reason}
+    )
+    retained, missing = advance_baseline_history(history, (skipped,))
+    assert missing[0].usage is None
+    assert retained.entries == history.entries
+    _, followup = advance_baseline_history(
+        retained, (first.model_copy(update={"request_id": "followup", "started_at": 10004.0, "available_at": 10005.0}),)
+    )
+    assert followup[0].usage is not None and followup[0].usage.prompt_tokens_details.cached_tokens == 8000
+    _, expired = advance_baseline_history(
+        retained, (first.model_copy(update={"request_id": "expired", "started_at": 11800.0, "available_at": 11801.0}),)
+    )
+    assert expired[0].usage is not None and expired[0].usage.prompt_tokens_details.cached_tokens == 0
+
+
+def test_partial_multimodal_cache_replaces_observed_splits_without_double_charging() -> None:
+    usage: Final = normalize_cache_usage(
+        Usage(
+            prompt_tokens=8000,
+            completion_tokens=20,
+            total_tokens=8020,
+            prompt_tokens_details={
+                "audio_tokens": 2000,
+                "image_tokens": 1000,
+                "video_tokens": 500,
+                "cached_tokens": 2000,
+                "cached_tokens_details": {
+                    "audio_tokens": 800,
+                    "image_tokens": 300,
+                    "text_tokens": 900,
+                },
+            },
+        )
+    )
+    original: Final = _observation(_request(), provider="gemini")
+    assert original.plan is not None
+    plan: Final = replace(original.plan, breakpoints=(replace(original.plan.breakpoints[0], prefix_tokens=4000),))
+    first: Final = original.model_copy(update={"usage": usage, "plan": plan})
+    history, cold = advance_baseline_history(BaselineHistory(), (first,))
+    _, warm = advance_baseline_history(
+        history,
+        (
+            first.model_copy(
+                update={
+                    "request_id": "warm",
+                    "started_at": 10002.0,
+                    "available_at": 10003.0,
+                }
+            ),
+        ),
+    )
+    prices: Final[ModelInfo] = {
+        **_PRICES,
+        "cache_read_input_audio_token_cost": 0.002,
+        "input_cost_per_audio_token": 0.02,
+        "input_cost_per_image_token": 0.03,
+        "input_cost_per_video_token": 0.04,
+    }
+    snapshot: Final = BaselineCostSnapshot(
+        model="test-model",
+        provider="gemini",
+        prices=prices,
+        actual_spend=100.0,
+        actual_token_cost=100.0,
+    )
+    ordinary: Final = 2250 * 0.01 + 1000 * 0.02 + 500 * 0.03 + 250 * 0.04 + 20 * 0.03
+    for value, expected in (
+        (usage, 3600 * 0.01 + 1200 * 0.02 + 700 * 0.03 + 500 * 0.04 + 1200 * 0.001 + 800 * 0.002 + 20 * 0.03),
+        (cold[0].usage, ordinary + 4000 * 0.017),
+        (warm[0].usage, ordinary + 3000 * 0.001 + 1000 * 0.002),
+    ):
+        assert value is not None
+        assert (priced := price_baseline_comparison(snapshot, value, "modeled")) is not None
+        assert priced.baseline == pytest.approx(expected)
+    assert usage.prompt_tokens_details.cached_tokens_details.audio_tokens == 800

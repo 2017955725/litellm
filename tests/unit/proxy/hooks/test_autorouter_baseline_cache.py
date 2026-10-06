@@ -2,7 +2,7 @@ import asyncio
 import json
 from collections.abc import AsyncIterator, Callable, Generator, Mapping
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from types import MappingProxyType
 from typing import Final, cast
 from uuid import uuid4
@@ -398,7 +398,8 @@ async def test_direct_openai_baseline_collects_provider_usage_across_api_surface
         function_id="test",
         kwargs={},
     )
-    collector: Final = AutoRouterBaselineCache(None, router=lambda: None, clock=lambda: now.timestamp() + 1)
+    logging._update_completion_start_time(now + timedelta(seconds=0.25))
+    collector: Final = AutoRouterBaselineCache(None, router=lambda: None, clock=lambda: now.timestamp() + 10)
     await collector.async_pre_call_deployment_hook({**request, "litellm_logging_obj": logging}, call_type)
     assert logging.baseline_cache_context is not None
     if surface == "messages":
@@ -443,9 +444,22 @@ async def test_direct_openai_baseline_collects_provider_usage_across_api_surface
     assert captured.observation.usage.prompt_tokens_details.cached_tokens == 4000
     assert captured.observation.plan is not None
     assert prompt not in captured.model_dump_json()
-    _, estimates = advance_baseline_history(BaselineHistory(), (captured.observation,))
+    history, estimates = advance_baseline_history(BaselineHistory(), (captured.observation,))
     assert estimates[0].usage is not None and estimates[0].usage.prompt_tokens_details.cached_tokens == 0
     assert estimates[0].usage.prompt_tokens_details.cache_creation_tokens == 10000
+    _, followup = advance_baseline_history(
+        history,
+        (
+            captured.observation.model_copy(
+                update={
+                    "request_id": "followup",
+                    "started_at": now.timestamp() + 1,
+                    "available_at": now.timestamp() + 2,
+                }
+            ),
+        ),
+    )
+    assert followup[0].usage is not None and followup[0].usage.prompt_tokens_details.cached_tokens == 10000
 
 
 @pytest.mark.parametrize("baseline_effort", (None, "medium"))

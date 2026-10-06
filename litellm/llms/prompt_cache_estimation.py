@@ -9,6 +9,7 @@ from typing import Final
 
 from pydantic import JsonValue, TypeAdapter
 
+from litellm.litellm_core_utils.llm_cost_calc.utils import parse_prompt_tokens_details
 from litellm.litellm_core_utils.prompt_templates.factory import resolve_structured_messages
 from litellm.llms.anthropic.prompt_cache_prediction import CountedBreakpoint, CountedPromptCachePlan
 from litellm.router_utils.baseline_request import BASELINE_PARAMETERS, CACHE_SETTINGS, within_baseline_budget
@@ -200,6 +201,7 @@ def estimate_cache_plan(
             "reported_input_tokens_scaled_across_prefixes",
             "same_output_tokens",
             "message_boundary_cache_approximation",
+            "cache_tokens_scaled_across_modalities",
             *(
                 ()
                 if duration_pricing
@@ -220,12 +222,15 @@ def normalize_cache_usage(usage: Usage) -> Usage:
         or _COUNT.validate_python(getattr(details, "cache_write_tokens", None))
         or 0
     )
-    other: Final = (details.audio_tokens or 0) + (details.image_tokens or 0) + (details.video_tokens or 0)
+    parsed: Final = parse_prompt_tokens_details(usage)
+    other: Final = parsed["audio_tokens"] + parsed["image_tokens"] + parsed["video_tokens"]
+    cached: Final = getattr(details, "cached_tokens_details", None)
+    cached_text: Final = (cached.text_tokens or 0) if cached is not None else 0
     return usage.model_copy(
         update={
             "prompt_tokens_details": details.model_copy(
                 update={
-                    "text_tokens": usage.prompt_tokens - read - write - other,
+                    "text_tokens": max(usage.prompt_tokens - read - write - other, 0) + cached_text,
                     "cached_tokens": read,
                     "cache_creation_tokens": write,
                 }

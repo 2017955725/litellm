@@ -32,14 +32,14 @@ from litellm.llms.anthropic.prompt_cache_prediction import (
     supported_baseline_recipient,
     supported_prediction_headers,
 )
-from litellm.proxy.spend_tracking.baseline_accounting import BaselineObservation
-from litellm.proxy.spend_tracking.cache_history import (
+from litellm.llms.prompt_cache_estimation import (
     EstimatedCachePlan,
     count_prefix_tokens,
     estimate_cache_plan,
     normalize_cache_usage,
     prepare_cache_request,
 )
+from litellm.proxy.spend_tracking.baseline_accounting import BaselineObservation
 from litellm.proxy.spend_tracking.savings import (
     _cost_of_usage,  # pyright: ignore[reportPrivateUsage]  # shared token-pricing owner
     _effective_model_info,  # pyright: ignore[reportPrivateUsage]  # existing deployment-price owner
@@ -489,7 +489,12 @@ async def _capture_estimated(
     from litellm.litellm_core_utils.litellm_logging import StandardLoggingPayloadSetup
 
     original: Final = context.capture.observation
-    available: Final = max(original.started_at, context.collector.clock())
+    available: Final = max(
+        original.started_at,
+        logging_obj.completion_start_time.timestamp()
+        if logging_obj.completion_start_time is not None
+        else context.collector.clock(),
+    )
     raw_usage: Final = _UsageContainer.model_validate(response_obj).usage
     serialized: Final = raw_usage.model_dump() if isinstance(raw_usage, pydantic.BaseModel) else raw_usage
     usage: Final = (
