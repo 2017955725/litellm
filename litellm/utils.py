@@ -8960,6 +8960,8 @@ class ProviderConfigManager:
 
     @staticmethod
     def get_provider_decisions_config(model: str, provider: LlmProviders) -> BaseDecisionsConfig | None:
+        if provider == LlmProviders.OPENAI:
+            return litellm.OpenAIDecisionsConfig()
         if provider == LlmProviders.PERPLEXITY:
             return litellm.PerplexityDecisionsConfig()
         if provider == LlmProviders.TYPESAFE:
