@@ -5,6 +5,7 @@ System One (TypeSafe, Perplexity, OpenRouter, Cloudflare Clef, Strands Decider) 
 Predicates are `noul` questions, choice options are a `criteria` map, score levels are a `criteria` list.
 """
 
+import itertools
 from collections.abc import Mapping, Sequence
 from typing import Final, Literal, TypeAlias
 
@@ -16,7 +17,9 @@ from litellm.types.decisions import (
     ChoiceProbability,
     ChoiceQuestion,
     DecisionAnswer,
+    DecisionChoice,
     DecisionInputMessage,
+    DecisionInputPart,
     DecisionQuestion,
     DecisionsRequest,
     DecisionsResponse,
@@ -87,15 +90,21 @@ def _unsupported(what: str, custom_llm_provider: str) -> BaseLLMException:
 
 def question_keys(questions: Sequence[DecisionQuestion], custom_llm_provider: str) -> tuple[str, ...]:
     """System One keys questions and answers by name, so unnamed questions get a positional key."""
-    keys: Final = tuple(
-        question.name if question.name is not None else f"q{index}" for index, question in enumerate(questions)
-    )
-    if len(set(keys)) != len(keys):
+    names: Final = tuple(question.name for question in questions if question.name is not None)
+    if len(set(names)) != len(names):
         raise BaseLLMException(
             status_code=400,
             message=f"Decisions provider '{custom_llm_provider}' requires a unique name per question",
         )
-    return keys
+    taken: Final = frozenset(names)
+    return tuple(
+        question.name if question.name is not None else _positional_key(index, taken)
+        for index, question in enumerate(questions)
+    )
+
+
+def _positional_key(index: int, taken: frozenset[str]) -> str:
+    return next(key for key in (f"{'_' * depth}q{index}" for depth in itertools.count()) if key not in taken)
 
 
 def system_one_state(request: DecisionsRequest, custom_llm_provider: str) -> str:
@@ -107,23 +116,23 @@ def system_one_state(request: DecisionsRequest, custom_llm_provider: str) -> str
 def _message_text(message: DecisionInputMessage, custom_llm_provider: str) -> str:
     if isinstance(message.content, str):
         return message.content
-    texts: list[str] = []
-    for part in message.content:
-        if part.type != "input_text":
-            raise _unsupported("input_image parts", custom_llm_provider)
-        texts.append(part.text)
-    return "\n".join(texts)
+    return "\n".join(_part_text(part, custom_llm_provider) for part in message.content)
+
+
+def _part_text(part: DecisionInputPart, custom_llm_provider: str) -> str:
+    if part.type != "input_text":
+        raise _unsupported("input_image parts", custom_llm_provider)
+    return part.text
 
 
 def system_one_question(question: DecisionQuestion, custom_llm_provider: str) -> dict[str, object]:
     if isinstance(question, PredicateQuestion):
         return {"type": "noul", "instructions": question.instructions}
     if isinstance(question, ChoiceQuestion):
-        criteria: dict[str, str | None] = {}
-        for choice in question.choices:
-            if not isinstance(choice.value, str):
-                raise _unsupported("boolean choice values", custom_llm_provider)
-            criteria[choice.value] = choice.description
+        values: Final = tuple(_choice_key(choice, custom_llm_provider) for choice in question.choices)
+        if len(set(values)) != len(values):
+            raise _unsupported("repeated choice values", custom_llm_provider)
+        criteria: Final = {value: choice.description for value, choice in zip(values, question.choices, strict=True)}
         return {"type": "choice", "instructions": question.instructions, "criteria": criteria}
     return {
         "type": "score",
@@ -200,3 +209,9 @@ def decisions_response(
             total_tokens=usage.input_tokens + usage.output_tokens,
         ),
     )
+
+
+def _choice_key(choice: DecisionChoice, custom_llm_provider: str) -> str:
+    if not isinstance(choice.value, str):
+        raise _unsupported("boolean choice values", custom_llm_provider)
+    return choice.value

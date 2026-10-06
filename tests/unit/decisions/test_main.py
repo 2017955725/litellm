@@ -106,8 +106,16 @@ class _RecordingLogger(CustomLogger):
         super().__init__()
         self.standard_logging_object: Mapping[str, object] | None = None
 
-    async def async_log_success_event(self, kwargs, response_obj, start_time, end_time) -> None:
-        self.standard_logging_object = kwargs.get("standard_logging_object")
+    async def async_log_success_event(
+        self,
+        kwargs: Mapping[str, object],
+        response_obj: object,
+        start_time: object,
+        end_time: object,
+    ) -> None:
+        standard_logging_object: Final = kwargs.get("standard_logging_object")
+        if isinstance(standard_logging_object, dict):
+            self.standard_logging_object = standard_logging_object
 
 
 async def _drain_logging_worker() -> None:
@@ -183,6 +191,11 @@ async def test_adecisions_translates_to_the_system_one_wire_contract(
         ),
         ("boolean choice", _INPUT, [{"type": "choice", "instructions": "Refund?", "choices": [{"value": True}]}]),
         ("unique name", _INPUT, [*_predicate(), *_predicate()]),
+        (
+            "repeated choice",
+            _INPUT,
+            [{"type": "choice", "instructions": "Refund?", "choices": [{"value": "yes"}, {"value": "yes"}]}],
+        ),
     ),
 )
 async def test_system_one_providers_refuse_what_they_cannot_express_before_http(
@@ -197,6 +210,31 @@ async def test_system_one_providers_refuse_what_they_cannot_express_before_http(
         )
 
     assert len(respx_mock.calls) == 0
+
+
+@pytest.mark.asyncio
+async def test_positional_system_one_keys_never_shadow_a_supplied_name(respx_mock: respx.MockRouter) -> None:
+    route: Final = respx_mock.post("https://api.perplexity.ai/v1/decisions").respond(
+        json={
+            "model": "pplx-decider-v1-27b",
+            "answers": {"_q0": {"type": "noul", "noul": 0.25}, "q0": {"type": "noul", "noul": 0.75}},
+            "usage": {"input_tokens": 10, "output_tokens": 2},
+        }
+    )
+
+    response: Final = await litellm.adecisions(
+        model="perplexity/pplx-decider-v1-27b",
+        input=_INPUT,
+        questions=[{"type": "predicate", "instructions": "Is this a defect?"}, *_predicate("q0")],
+        api_key="caller-key",
+    )
+
+    assert route.called
+    assert tuple(json.loads(respx_mock.calls[0].request.content)["questions"]) == ("_q0", "q0")
+    assert [answer.model_dump(mode="json") for answer in response.answers] == [
+        {"type": "predicate", "name": None, "probability": 0.25},
+        {"type": "predicate", "name": "q0", "probability": 0.75},
+    ]
 
 
 @pytest.mark.asyncio
