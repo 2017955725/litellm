@@ -9,6 +9,7 @@ users can intentionally clear previously-set fields.
 
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Final
 
 from fastapi import HTTPException
 from litellm import Router
@@ -25,6 +26,7 @@ from litellm.proxy._types import (
     UserAPIKeyAuth,
 )
 from litellm.proxy.management_endpoints.common_utils import (
+    check_require_trace_id_caller_permission,
     _org_admin_can_invite_user,
     _set_object_metadata_field,
     _team_admin_can_invite_user,
@@ -859,6 +861,94 @@ class TestCheckDisableGlobalGuardrailsCallerPermission:
             _check_disable_global_guardrails_caller_permission(True, {"disable_global_guardrails": True}, self._admin())
             is None
         )
+
+
+@pytest.mark.parametrize(
+    ("require_trace_id", "metadata", "metadata_sent", "existing_metadata"),
+    [
+        pytest.param(True, None, False, None, id="create-with-top-level-true"),
+        pytest.param(False, None, False, {"require_trace_id": True}, id="clear-stored-value-top-level"),
+        pytest.param(None, {}, True, {"require_trace_id": True}, id="replace-metadata-omitting-stored-value"),
+        pytest.param(
+            None,
+            None,
+            True,
+            {"require_trace_id": True},
+            id="explicit-null-metadata-clears-stored-value",
+        ),
+        pytest.param(
+            False,
+            {"require_trace_id": True},
+            True,
+            {"require_trace_id": True},
+            id="top-level-false-wins-over-metadata",
+        ),
+    ],
+)
+def test_non_proxy_admin_cannot_change_require_trace_id(
+    require_trace_id: bool | None,
+    metadata: dict[str, object] | None,
+    metadata_sent: bool,
+    existing_metadata: dict[str, object] | None,
+) -> None:
+    exc_info: Final[pytest.ExceptionInfo[HTTPException]]
+    with pytest.raises(HTTPException) as exc_info:
+        check_require_trace_id_caller_permission(
+            require_trace_id,
+            metadata,
+            UserAPIKeyAuth(user_id="u1", user_role=LitellmUserRoles.INTERNAL_USER),
+            metadata_sent=metadata_sent,
+            existing_metadata=existing_metadata,
+        )
+
+    assert exc_info.value.status_code == 403
+    assert exc_info.value.detail == {"error": "Only proxy admins can set `require_trace_id` on a team."}
+
+
+@pytest.mark.parametrize(
+    ("require_trace_id", "metadata", "metadata_sent", "existing_metadata"),
+    [
+        pytest.param(True, {"require_trace_id": True}, True, {"require_trace_id": True}, id="resend-stored-value"),
+        pytest.param(None, {}, True, None, id="metadata-without-stored-value"),
+        pytest.param(
+            True,
+            {},
+            True,
+            {"require_trace_id": True},
+            id="top-level-true-with-empty-metadata-keeps-stored-value",
+        ),
+        pytest.param(None, None, False, {"require_trace_id": True}, id="metadata-not-sent"),
+    ],
+)
+def test_non_proxy_admin_can_preserve_or_omit_require_trace_id(
+    require_trace_id: bool | None,
+    metadata: dict[str, object] | None,
+    metadata_sent: bool,
+    existing_metadata: dict[str, object] | None,
+) -> None:
+    assert (
+        check_require_trace_id_caller_permission(
+            require_trace_id,
+            metadata,
+            UserAPIKeyAuth(user_id="u1", user_role=LitellmUserRoles.INTERNAL_USER),
+            metadata_sent=metadata_sent,
+            existing_metadata=existing_metadata,
+        )
+        is None
+    )
+
+
+def test_proxy_admin_can_flip_stored_require_trace_id() -> None:
+    assert (
+        check_require_trace_id_caller_permission(
+            False,
+            None,
+            UserAPIKeyAuth(user_id="u2", user_role=LitellmUserRoles.PROXY_ADMIN),
+            metadata_sent=False,
+            existing_metadata={"require_trace_id": True},
+        )
+        is None
+    )
 
 
 class TestTeamMemberHasPermission:
