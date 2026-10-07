@@ -52,8 +52,8 @@ from litellm.proxy.spend_tracking.savings import (
 from litellm.router_utils.baseline_request import baseline_request
 from litellm.types.llms.base import LiteLLMBaseModel
 from litellm.types.router import BaselineRouteStamp
-from litellm.types.utils import CallTypes, ModelInfo, Usage
-from litellm.utils import get_prompt_cache_min_tokens
+from litellm.types.utils import CallTypes, LlmProviders, ModelInfo, Usage
+from litellm.utils import ProviderConfigManager, get_prompt_cache_min_tokens
 
 if TYPE_CHECKING:
     from litellm.litellm_core_utils.litellm_logging import Logging
@@ -132,6 +132,17 @@ def _digest(value: object) -> str:
 
 def _native_body_digest(body: Mapping[str, JsonValue]) -> str:
     return _digest({key: value for key, value in body.items() if key not in ("metadata", "stream")})
+
+
+def _uses_messages_adapter(model: str, provider: str, model_info: Mapping[str, object]) -> bool:
+    from litellm.llms.anthropic.pass_through.messages.handler import (
+        _deployment_passes_through_anthropic_messages,  # pyright: ignore[reportPrivateUsage]  # reuse the native dispatch opt-in owner
+    )
+
+    provider_id: Final = next((candidate for candidate in LlmProviders if candidate.value == provider), None)
+    return not _deployment_passes_through_anthropic_messages(dict(model_info)) and (
+        provider_id is None or ProviderConfigManager.get_provider_anthropic_messages_config(model, provider_id) is None
+    )
 
 
 class AutoRouterBaselineCache(CustomLogger):
@@ -215,17 +226,26 @@ class AutoRouterBaselineCache(CustomLogger):
             estimated: Final = call_type != CallTypes.anthropic_messages or not isinstance(
                 target, NativePredictionTarget
             )
+            native: Final = call_type == CallTypes.anthropic_messages and not _uses_messages_adapter(
+                identity.model,
+                identity.provider,
+                _METADATA.validate_python(deployment.model_info.model_dump()) if deployment else {},
+            )
             projected: Final = (
                 baseline_request(
                     kwargs,
                     request.route.request_parameters,
                     params,
-                    include_extra_body=call_type != CallTypes.anthropic_messages,
+                    include_extra_body=not native,
                 )
                 if request.route.request_parameters is not None
                 else None
             )
-            estimated_request: Final = prepare_cache_request(projected) if estimated and projected is not None else None
+            estimated_request: Final = (
+                prepare_cache_request(projected, identity.model, identity.provider, native=native)
+                if estimated and projected is not None
+                else None
+            )
             scope: Final = "autorouter-baseline:v3:" + _digest(
                 (
                     "baseline_request_v2" if estimated else "baseline_request_v3",
@@ -235,7 +255,7 @@ class AutoRouterBaselineCache(CustomLogger):
                     request.route.baseline_deployment_id,
                     params,
                     prices,
-                    *((identity, "estimated_prefixes_v4") if estimated else ()),
+                    *((identity, "estimated_prefixes_v5") if estimated else ()),
                 )
             )
             started: Final = logging_obj.start_time.timestamp()

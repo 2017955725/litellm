@@ -5,19 +5,34 @@ import json
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from itertools import accumulate
-from typing import Final
+from typing import Final, cast
 
-from pydantic import JsonValue, TypeAdapter
+from pydantic import JsonValue, TypeAdapter, ValidationError
 
+from litellm.integrations.anthropic_cache_control_hook import (
+    CARRY_UNMATCHED_MESSAGE_POINTS,
+    AnthropicCacheControlHook,
+)
 from litellm.litellm_core_utils.llm_cost_calc.utils import parse_prompt_tokens_details
 from litellm.litellm_core_utils.prompt_templates.factory import resolve_structured_messages
+from litellm.llms.anthropic.common_utils import supports_anthropic_cache_control
+from litellm.llms.anthropic.pass_through.messages.utils import prepare_native_messages
 from litellm.llms.anthropic.prompt_cache_prediction import CountedBreakpoint, CountedPromptCachePlan
-from litellm.router_utils.baseline_request import BASELINE_PARAMETERS, CACHE_SETTINGS, within_baseline_budget
+from litellm.responses.utils import ResponsesAPIRequestUtils
+from litellm.router_utils.baseline_request import (
+    BASELINE_PARAMETERS,
+    CACHE_SETTINGS,
+    NATIVE_ONLY_PARAMETERS,
+    within_baseline_budget,
+)
+from litellm.types.llms.openai import AllMessageValues, ResponseInputParam
 from litellm.types.utils import ModelInfo, PromptTokensDetailsWrapper, Usage
 from litellm.utils import token_counter
 
 _OBJECT: Final = TypeAdapter(dict[str, JsonValue])
 _MESSAGES: Final = TypeAdapter(list[dict[str, JsonValue]])
+_INPUT: Final = TypeAdapter(str | list[dict[str, JsonValue]])
+_SYSTEM: Final = TypeAdapter(str | list[dict[str, JsonValue]] | None)
 _TTLS: Final = {"5m": 300, "30m": 1800, "1h": 3600, "24h": 86400}
 _COUNT: Final = TypeAdapter(int | None)
 _CONTROLS: Final = ("cache_control", "prompt_cache_breakpoint")
@@ -60,9 +75,88 @@ def _parts(message: dict[str, JsonValue]) -> Iterator[_Part]:
         )
 
 
-def prepare_cache_request(kwargs: Mapping[str, object]) -> dict[str, JsonValue] | None:
-    selected: Final = {key: kwargs[key] for key in (*BASELINE_PARAMETERS, "messages", "input") if key in kwargs}
-    return _OBJECT.validate_python(selected) if within_baseline_budget(selected) else None
+def prepare_cache_request(
+    kwargs: Mapping[str, object], model: str | None = None, provider: str | None = None, *, native: bool = False
+) -> dict[str, JsonValue] | None:
+    selected: Final = {
+        key: kwargs[key] for key in (*BASELINE_PARAMETERS, "messages", "input", "extra_body") if key in kwargs
+    }
+    if not within_baseline_budget(selected):
+        return None
+    owned: Final = _OBJECT.validate_python(selected)
+    if (
+        model is None
+        or provider is None
+        or not (provider == "anthropic" or supports_anthropic_cache_control(model, provider))
+    ):
+        return owned
+    try:
+        return _prepare_cache_injections(owned, model, provider, native=native)
+    except (ValidationError, ValueError, TypeError):
+        return None
+
+
+def _prepare_cache_injections(
+    request: dict[str, JsonValue], model: str, provider: str, *, native: bool
+) -> dict[str, JsonValue] | None:
+    tools: Final = _MESSAGES.validate_python(request.get("tools") or [])
+    if native:
+        native_options: Final = dict(request)
+        native_messages, system = prepare_native_messages(
+            _MESSAGES.validate_python(request.get("messages")),
+            _SYSTEM.validate_python(request.get("system")),
+            native_options,
+            model=model,
+            custom_llm_provider=provider,
+            tools=tools,
+        )
+        return (
+            None
+            if native_options.get("cache_control_injection_points")
+            else {**request, "messages": native_messages, "system": system}
+        )
+    hook: Final = AnthropicCacheControlHook()
+    options: Final = _responses_cache_input(request, hook, model) if "input" in request else dict(request)
+    messages: Final = cast(  # cast-ok: JSON validation retains provider extensions accepted by the shared hook
+        list[AllMessageValues], _MESSAGES.validate_python(options.get("messages"))
+    )
+    AnthropicCacheControlHook.maybe_seed_default_injection_points(
+        options,
+        messages,
+        model,
+        provider,
+        tools=tools,
+        enable_prompt_caching=request.get("enable_prompt_caching") is True,
+    )
+    _, injected, remaining = hook.get_chat_completion_prompt(model, messages, options, None, None, {})
+    if remaining.get("cache_control_injection_points"):
+        return None
+    return {
+        **{key: value for key, value in request.items() if key not in ("input", "instructions")},
+        "messages": _MESSAGES.validate_python(injected),
+    }
+
+
+def _responses_cache_input(
+    request: dict[str, JsonValue], hook: AnthropicCacheControlHook, model: str
+) -> dict[str, JsonValue]:
+    original: Final = cast(  # cast-ok: the shared Responses adapter accepts JSON input extensions beyond SDK fields
+        str | ResponseInputParam, _INPUT.validate_python(request["input"])
+    )
+    provisional: Final = ResponsesAPIRequestUtils.responses_input_to_chat_messages(original)
+    _, marked, deferred = hook.get_chat_completion_prompt(
+        model,
+        provisional,
+        {**request, CARRY_UNMATCHED_MESSAGE_POINTS: True},
+        None,
+        None,
+        {},
+    )
+    merged: Final = ResponsesAPIRequestUtils.merge_prompt_management_input(original, provisional, marked)
+    return {
+        **_OBJECT.validate_python(deferred),
+        "messages": _MESSAGES.validate_python(resolve_structured_messages(None, {**request, "input": merged})),
+    }
 
 
 def count_prefix_tokens(model: str, text: str) -> int:
@@ -90,7 +184,15 @@ def estimate_cache_plan(
     usage: Usage,
     counter: Callable[[str, str], int] = count_prefix_tokens,
 ) -> EstimatedCachePlan | None:
-    if any(request.get(key) for key in ("previous_response_id", "conversation", "cached_content")):
+    if any(
+        request.get(key)
+        for key in (
+            "previous_response_id",
+            "conversation",
+            "cached_content",
+            *NATIVE_ONLY_PARAMETERS,
+        )
+    ):
         return None
     supplied: Final = request.get("messages") or request.get("input")
     input_messages: Final = _MESSAGES.validate_python(

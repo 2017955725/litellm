@@ -966,3 +966,118 @@ async def test_native_request_rewritten_after_capture_preserves_spend_without_gu
     assert observed.usage is not None
     actual: Final = payload["response_cost"]
     assert isinstance(actual, float) and actual > 0
+
+
+@pytest.mark.parametrize("chat_adapter", (False, True))
+async def test_messages_estimate_keeps_adapted_baseline_extra_body_retention(
+    monkeypatch: pytest.MonkeyPatch, chat_adapter: bool
+) -> None:
+    settings: Final = {"prompt_cache_retention": "24h", "prompt_cache_key": "configured-baseline"}
+    models: Final = _MESSAGES.validate_python(
+        [
+            *_MODELS[:2],
+            {
+                "model_name": "opus",
+                "model_info": {"id": "baseline"},
+                "litellm_params": {
+                    "model": "openai/gpt-6-astra",
+                    "api_key": "test-selected",
+                    "api_base": "https://api.openai.com/v1",
+                    "extra_body": settings,
+                },
+            },
+        ]
+    )
+    rig: Final = _Rig(monkeypatch, models=models)
+    monkeypatch.setattr(litellm, "use_chat_completions_url_for_anthropic_messages", chat_adapter)
+
+    def openai_response(request: httpx.Request) -> httpx.Response:
+        body: Final = _JSON_OBJECT.validate_json(request.content)
+        return httpx.Response(
+            200,
+            request=request,
+            json={
+                "id": "chatcmpl-baseline" if chat_adapter else "resp_baseline",
+                "object": "chat.completion" if chat_adapter else "response",
+                "model": body["model"],
+                **(
+                    {
+                        "created": 1,
+                        "choices": [
+                            {"index": 0, "finish_reason": "stop", "message": {"role": "assistant", "content": "OK"}}
+                        ],
+                        "usage": {"prompt_tokens": 6000, "completion_tokens": 10, "total_tokens": 6010},
+                    }
+                    if chat_adapter
+                    else {
+                        "created_at": 1,
+                        "status": "completed",
+                        "output": [],
+                        "usage": {"input_tokens": 6000, "output_tokens": 10, "total_tokens": 6010},
+                    }
+                ),
+            },
+        )
+
+    with respx.mock() as transport:
+        transport.post("https://api.anthropic.com/v1/messages").mock(side_effect=_upstream)
+        adapted: Final = transport.post(
+            "https://api.openai.com/v1/" + ("chat/completions" if chat_adapter else "responses")
+        ).mock(side_effect=openai_response)
+        await rig.router.anthropic_messages(
+            model="opus", max_tokens=16, messages=[{"role": "user", "content": "question"}]
+        )
+        wire: Final = _JSON_OBJECT.validate_json(adapted.calls.last.request.content)
+        log: Final = rig.logging()
+        await _call(rig.router, log, messages='[{"role":"user","content":"question"}]')
+        captured: Final = _observation(await rig.capture.payload())
+    assert {key: wire.get(key) for key in settings} == settings
+    assert log.baseline_cache_context is not None
+    projected: Final = log.baseline_cache_context.estimated_request
+    assert projected is not None and {key: projected.get(key) for key in settings} == settings
+    assert captured.observation.plan is not None and captured.observation.plan.breakpoints
+    assert {marker.ttl_seconds for marker in captured.observation.plan.breakpoints} == {24 * 60 * 60}
+
+
+@pytest.mark.parametrize("passthrough", (False, True))
+async def test_messages_estimate_does_not_flatten_native_baseline_extra_body(
+    monkeypatch: pytest.MonkeyPatch, passthrough: bool
+) -> None:
+    settings: Final = {"prompt_cache_retention": "24h", "prompt_cache_key": "native-ignored"}
+    rig: Final = _Rig(
+        monkeypatch,
+        models=_MESSAGES.validate_python(
+            [
+                *_MODELS[:2],
+                {
+                    "model_name": "opus",
+                    "model_info": {
+                        "id": "baseline",
+                        **({"supported_endpoints": ["/v1/messages"]} if passthrough else {}),
+                    },
+                    "litellm_params": {
+                        "model": "openai/gpt-6-astra" if passthrough else "anthropic/claude-opus-5",
+                        "api_key": "test-selected",
+                        "api_base": "https://api.anthropic.com",
+                        "extra_body": settings,
+                    },
+                },
+            ]
+        ),
+    )
+    with _transport(_upstream) as route:
+        await rig.router.anthropic_messages(
+            model="opus", max_tokens=16, messages=[{"role": "user", "content": "question"}]
+        )
+        wire: Final = _JSON_OBJECT.validate_json(route.calls.last.request.content)
+        log: Final = rig.logging()
+        await _call(rig.router, log)
+        await rig.capture.payload()
+    assert log.baseline_cache_context is not None and log.baseline_cache_context.estimated
+    projected: Final = log.baseline_cache_context.estimated_request
+    assert projected is not None
+    assert (
+        {key: projected.get(key) for key in settings}
+        == {key: wire.get(key) for key in settings}
+        == {key: None for key in settings}
+    )

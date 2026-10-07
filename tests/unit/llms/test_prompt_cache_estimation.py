@@ -11,6 +11,7 @@ from litellm.proxy.spend_tracking.baseline_accounting import (
     advance_baseline_history,
 )
 from litellm.proxy.spend_tracking.savings import BaselineCostSnapshot, price_baseline_comparison
+from litellm.router_utils.baseline_request import NATIVE_ONLY_PARAMETERS
 from litellm.types.utils import ModelInfo, Usage
 
 _PRICES: Final[ModelInfo] = {
@@ -196,6 +197,104 @@ def test_explicit_system_and_tool_cache_writes_are_reused(key: str, block: dict[
     assert 0 < writes < first.usage.prompt_tokens
     assert replay[0].usage.prompt_tokens_details.cached_tokens == writes
     assert replay[0].usage.prompt_tokens_details.cache_creation_tokens == 0
+
+
+@pytest.mark.parametrize("surface", ("chat", "responses", "native"))
+@pytest.mark.parametrize("mode", ("configured", "request", "global"))
+@pytest.mark.parametrize("ttl,seconds", (("5m", 300), ("1h", 3600)))
+def test_injected_baseline_markers_are_reused_with_the_requested_lifetime(
+    monkeypatch: pytest.MonkeyPatch, surface: str, mode: str, ttl: str, seconds: int
+) -> None:
+    monkeypatch.setattr(litellm, "enable_anthropic_prompt_caching", mode == "global")
+    monkeypatch.setattr(litellm, "anthropic_prompt_caching_ttl", ttl)
+    controls: Final = (
+        {
+            "cache_control_injection_points": [
+                {"location": "message", "role": "system", "control": {"type": "ephemeral", "ttl": ttl}},
+                {"location": "message", "role": "user", "control": {"type": "ephemeral", "ttl": ttl}},
+            ]
+        }
+        if mode == "configured"
+        else {"enable_prompt_caching": mode == "request"}
+    )
+    request: Final = {
+        "chat": {"messages": [{"role": "system", "content": _PROMPT}, {"role": "user", "content": "question"}]},
+        "responses": {"instructions": _PROMPT, "input": [{"role": "user", "content": "question"}]},
+        "native": {"system": _PROMPT, "messages": [{"role": "user", "content": "question"}]},
+    }[surface]
+    prepared: Final = prepare_cache_request(
+        {**request, **controls}, "claude-opus-5-5", "anthropic", native=surface == "native"
+    )
+    assert prepared is not None
+    estimated: Final = estimate_cache_plan(
+        prepared, "claude-opus-5-5", "anthropic", _PRICES, _usage(), lambda model, text: len(text)
+    )
+    assert estimated is not None
+    assert len(estimated.plan.breakpoints) == 2
+    assert all(marker.ttl_seconds == seconds for marker in estimated.plan.breakpoints)
+    first: Final = _observation(_request()).model_copy(update={"plan": estimated.plan})
+    history, cold = advance_baseline_history(BaselineHistory(), (first,))
+    _, warm = advance_baseline_history(
+        history, (first.model_copy(update={"request_id": "warm", "started_at": 10002.0, "available_at": 10003.0}),)
+    )
+    assert cold[0].usage is not None and warm[0].usage is not None
+    assert cold[0].usage.prompt_tokens_details.cache_creation_tokens == first.usage.prompt_tokens
+    assert warm[0].usage.prompt_tokens_details.cached_tokens == first.usage.prompt_tokens
+    assert warm[0].usage.prompt_tokens_details.cache_creation_tokens == 0
+
+
+def test_responses_ordinal_injection_targets_input_before_instructions() -> None:
+    request: Final = {
+        "instructions": _PROMPT,
+        "input": [{"role": "user", "content": [{"type": "input_text", "text": "question"}]}],
+        "cache_control_injection_points": [{"location": "message", "index": 0}],
+    }
+    prepared: Final = prepare_cache_request(request, "claude-opus-5-5", "anthropic")
+    assert prepared is not None
+    estimated: Final = estimate_cache_plan(
+        prepared, "claude-opus-5-5", "anthropic", _PRICES, _usage(), lambda model, text: len(text)
+    )
+    assert estimated is not None and len(estimated.plan.breakpoints) == 1
+    assert estimated.plan.breakpoints[0].prefix_tokens == _usage().prompt_tokens
+    assert "cache_control" not in str(request["input"])
+
+
+@pytest.mark.parametrize("configured", (False, True))
+def test_injected_native_cache_respects_client_marks_and_the_shared_cap(configured: bool) -> None:
+    control: Final = {"type": "ephemeral", "ttl": "1h"}
+    request: Final = _request(
+        system=_PROMPT,
+        enable_prompt_caching=True,
+        tools=[
+            {"name": f"tool_{index}", "input_schema": {"type": "object"}, "cache_control": control}
+            for index in range(3)
+        ],
+        **(
+            {
+                "cache_control_injection_points": [
+                    {"location": "message", "role": "system"},
+                    {"location": "message", "index": -1},
+                ]
+            }
+            if configured
+            else {}
+        ),
+    )
+    prepared: Final = prepare_cache_request(request, "claude-opus-5-5", "anthropic", native=True)
+    assert prepared is not None
+    estimated: Final = estimate_cache_plan(
+        prepared, "claude-opus-5-5", "anthropic", _PRICES, _usage(), lambda model, text: len(text)
+    )
+    assert estimated is not None and len(estimated.plan.breakpoints) == (4 if configured else 3)
+    assert all(marker.ttl_seconds == 3600 for marker in estimated.plan.breakpoints[:3])
+    assert request["system"] == _PROMPT
+
+
+@pytest.mark.parametrize("field", NATIVE_ONLY_PARAMETERS)
+def test_opaque_native_options_are_not_silently_ignored_by_estimates(field: str) -> None:
+    prepared: Final = prepare_cache_request(_request(**{field: "opaque"}))
+    assert prepared is not None
+    assert estimate_cache_plan(prepared, "claude-opus-5-5", "anthropic", _PRICES, _usage()) is None
 
 
 @pytest.mark.parametrize("modality", ("audio_tokens", "image_tokens", "video_tokens"))
