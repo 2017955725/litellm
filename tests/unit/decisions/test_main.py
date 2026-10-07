@@ -13,6 +13,7 @@ from litellm.integrations.custom_logger import CustomLogger
 from litellm.litellm_core_utils.logging_worker import GLOBAL_LOGGING_WORKER
 from litellm.types.decisions import (
     ChoiceAnswer,
+    DecisionInputMessage,
     DecisionsResponse,
     DecisionsUsage,
     PredicateAnswer,
@@ -432,6 +433,30 @@ async def test_decisions_cost_is_in_standard_logging_object(respx_mock: respx.Mo
     assert recording_logger.standard_logging_object["prompt_tokens"] == _INPUT_TOKENS
     assert recording_logger.standard_logging_object["completion_tokens"] == _OUTPUT_TOKENS
     assert recording_logger.standard_logging_object["messages"] == [{"role": "user", "content": _INPUT}]
+
+
+@pytest.mark.asyncio
+async def test_decisions_log_typed_input_messages(respx_mock: respx.MockRouter) -> None:
+    route: Final = respx_mock.post("https://api.perplexity.ai/v1/decisions").respond(json=_SYSTEM_ONE_RESPONSE)
+    recording_logger: Final = _RecordingLogger()
+    original_callbacks: Final = litellm.callbacks
+    litellm.callbacks = [recording_logger]
+
+    try:
+        await litellm.adecisions(
+            model="perplexity/pplx-decider-v1-27b",
+            input=[DecisionInputMessage(role="user", content=_INPUT)],
+            questions=_predicate(),
+            api_key="caller-key",
+        )
+        await _drain_logging_worker()
+    finally:
+        litellm.callbacks = original_callbacks
+
+    assert route.called
+    assert recording_logger.standard_logging_object is not None
+    logged_messages: Final = recording_logger.standard_logging_object["messages"]
+    assert json.loads(logged_messages[0]["content"]) == [{"role": "user", "content": _INPUT}]
 
 
 @pytest.mark.asyncio
