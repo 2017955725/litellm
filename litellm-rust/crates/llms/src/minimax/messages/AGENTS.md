@@ -23,7 +23,7 @@
 # Known gaps
 
 - Python's last key fallback to the global `litellm.api_key` has no Rust equivalent
-- Not wired into `core` (`core/src/messages/common_utils.rs`) or `LlmProviders` yet
+- Not wired into `inference-messages` (`inference-messages/src/common_utils.rs`) or `LlmProviders` yet
 - The MiniMax-only content blocks in `litellm-llms-types::providers::minimax` are not parsed or validated by the adapter; they pass through as unrecognized Anthropic blocks
 
 # References

@@ -14,7 +14,7 @@ This directory owns the shared Messages provider adapter contract, its execution
 # Boundaries
 
 - Public request, response, content-block and event schemas belong in `litellm-llms-types::formats::messages`
-- Call orchestration belongs in `core/src/messages`
+- Call orchestration belongs in `inference-messages/src`
 - Metadata filtering, tool-ID rewriting, web-search replay policy, beta selection and thinking translation belong in `llms/src/<provider>/messages`
 
 # Gotchas

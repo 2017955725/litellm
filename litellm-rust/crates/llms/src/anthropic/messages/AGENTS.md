@@ -2,7 +2,7 @@ This directory owns Anthropic's implementation of the Messages adapter contract 
 
 # Scope
 
-- Anthropic's implementation of the Messages adapter contract in `base_llm/messages`, reached by `custom_llm_provider == "anthropic"` for any model through `ANTHROPIC_MESSAGES_CONFIG` in `core/src/messages`
+- Anthropic's implementation of the Messages adapter contract in `base_llm/messages`, reached by `custom_llm_provider == "anthropic"` for any model through `ANTHROPIC_MESSAGES_CONFIG` in `inference-messages/src`
 
 # Invariants
 
