@@ -3,6 +3,7 @@ import json
 from collections.abc import AsyncIterator, Callable, Generator, Mapping
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from itertools import product
 from types import MappingProxyType
 from typing import Final, cast
 from uuid import uuid4
@@ -629,16 +630,37 @@ async def test_native_count_finishing_after_quarter_worker_budget_keeps_plan_and
 
 
 @pytest.mark.parametrize(
-    "options",
+    "options,on_deployment",
     (
-        {"thinking": {"type": "enabled", "budget_tokens": 2048}},
-        {"extra_body": {"speed": "fast", "output_config": {"effort": "high"}}},
+        ({"thinking": {"type": "enabled", "budget_tokens": 2048}}, False),
+        ({"extra_body": {"speed": "fast", "output_config": {"effort": "high"}}}, False),
+        *product(
+            (
+                {"container": {"id": "container_test"}},
+                {"mcp_servers": [{"type": "url", "name": "test", "url": "https://example.com/mcp"}]},
+                {"inference_geo": "us"},
+                {"safeguards": [{"type": "default"}]},
+            ),
+            (False, True),
+        ),
     ),
 )
 async def test_native_baseline_identity_keeps_the_actual_transformed_body(
-    monkeypatch: pytest.MonkeyPatch, options: dict[str, JsonValue]
+    monkeypatch: pytest.MonkeyPatch, options: dict[str, JsonValue], on_deployment: bool
 ) -> None:
-    rig: Final = _Rig(monkeypatch)
+    models: Final = _MESSAGES.validate_python(
+        [
+            *_MODELS[:2],
+            {
+                **_MODELS[2],
+                "litellm_params": {
+                    **_JSON_OBJECT.validate_python(_MODELS[2]["litellm_params"]),
+                    **(options if on_deployment else {}),
+                },
+            },
+        ]
+    )
+    rig: Final = _Rig(monkeypatch, models=models)
     log: Final = rig.logging()
     with _transport(_upstream):
         await rig.router.anthropic_messages(
@@ -649,7 +671,7 @@ async def test_native_baseline_identity_keeps_the_actual_transformed_body(
             litellm_call_id=rig.call_id,
             litellm_metadata={"user_api_key_hash": "test-caller-hash"},
             litellm_session_id="native-identical",
-            **options,
+            **({} if on_deployment else options),
         )
         observed: Final = _observation(await rig.capture.payload()).observation
     assert observed.outcome == "complete"
@@ -658,6 +680,11 @@ async def test_native_baseline_identity_keeps_the_actual_transformed_body(
         log.baseline_cache_context.baseline_body,
         log.baseline_cache_context.selected_body_digest,
     )
+
+    from litellm.proxy.spend_tracking.baseline_accounting import BaselineHistory, advance_baseline_history
+
+    _, estimates = advance_baseline_history(BaselineHistory(), (observed,))
+    assert estimates[0].provenance == "observed_identical" and estimates[0].usage == observed.usage
 
 
 @pytest.mark.parametrize("tier_limit", (8, 16))
@@ -865,8 +892,22 @@ async def test_native_baseline_projection_matches_direct_baseline_request(
     }
 
 
-async def test_native_baseline_prices_projected_speed_without_changing_actual_spend(
+@pytest.mark.parametrize(
+    "selected,baseline,usage_field,observed_value,multiplier",
+    (
+        ({}, {"speed": "fast"}, "speed", "standard", 3.0),
+        ({"inference_geo": "us"}, {}, "inference_geo", "us", 1.0),
+    ),
+)
+@pytest.mark.parametrize("estimated", (False, True))
+async def test_native_baseline_prices_projected_settings_without_changing_actual_spend(
     monkeypatch: pytest.MonkeyPatch,
+    estimated: bool,
+    selected: dict[str, JsonValue],
+    baseline: dict[str, JsonValue],
+    usage_field: str,
+    observed_value: str,
+    multiplier: float,
 ) -> None:
     from litellm.proxy.spend_tracking.baseline_accounting import BaselineHistory, advance_baseline_history
     from litellm.proxy.spend_tracking.savings import baseline_cost_snapshot, price_baseline_comparison
@@ -875,7 +916,8 @@ async def test_native_baseline_prices_projected_speed_without_changing_actual_sp
     def upstream(request: httpx.Request) -> httpx.Response:
         body: Final = _JSON_OBJECT.validate_json(request.content)
         model: Final = body.get("model")
-        assert isinstance(model, str) and body.get("speed") is None
+        assert isinstance(model, str)
+        assert body.get(usage_field) == selected.get(usage_field)
         return httpx.Response(
             200,
             request=request,
@@ -884,7 +926,7 @@ async def test_native_baseline_prices_projected_speed_without_changing_actual_sp
                 "usage": {
                     "input_tokens": 6000,
                     "output_tokens": 10,
-                    "speed": "standard",
+                    usage_field: observed_value,
                     "cache_creation": {"ephemeral_5m_input_tokens": 0, "ephemeral_1h_input_tokens": 0},
                 },
             },
@@ -894,12 +936,20 @@ async def test_native_baseline_prices_projected_speed_without_changing_actual_sp
         monkeypatch,
         models=_MESSAGES.validate_python(
             [
-                *_MODELS[:2],
+                _MODELS[0],
+                {
+                    **_MODELS[1],
+                    "litellm_params": {
+                        **_JSON_OBJECT.validate_python(_MODELS[1]["litellm_params"]),
+                        **selected,
+                    },
+                },
                 {
                     **_MODELS[2],
                     "litellm_params": {
                         **_JSON_OBJECT.validate_python(_MODELS[2]["litellm_params"]),
-                        "speed": "fast",
+                        **baseline,
+                        **({"extra_body": {}} if estimated else {}),
                     },
                 },
             ]
@@ -927,7 +977,7 @@ async def test_native_baseline_prices_projected_speed_without_changing_actual_sp
         **captured.prices,
         "input_cost_per_token": 1e-6,
         "output_cost_per_token": 2e-6,
-        "provider_specific_entry": {"fast": 3.0},
+        "provider_specific_entry": {"fast": 3.0, "us": 2.0},
     }
     actual: Final = payload["response_cost"]
     assert isinstance(actual, float)
@@ -940,9 +990,11 @@ async def test_native_baseline_prices_projected_speed_without_changing_actual_sp
     )
     comparison: Final = price_baseline_comparison(snapshot, estimate.usage, estimate.provenance)
     assert comparison is not None and snapshot.actual_token_cost is not None, estimate.reason
-    assert comparison.baseline == pytest.approx(actual + (6000 * 1e-6 + 10 * 2e-6) * 3.0 - snapshot.actual_token_cost)
+    assert comparison.baseline == pytest.approx(
+        actual + (6000 * 1e-6 + 10 * 2e-6) * multiplier - snapshot.actual_token_cost
+    )
     assert comparison.actual == actual
-    assert _JSON_OBJECT.validate_python(response["usage"])["speed"] == "standard"
+    assert _JSON_OBJECT.validate_python(response["usage"])[usage_field] == observed_value
 
 
 async def test_native_request_rewritten_after_capture_preserves_spend_without_guessing_baseline(
@@ -1081,3 +1133,91 @@ async def test_messages_estimate_does_not_flatten_native_baseline_extra_body(
         == {key: wire.get(key) for key in settings}
         == {key: None for key in settings}
     )
+
+
+@pytest.mark.parametrize("unresolved_input", (False, True))
+async def test_estimated_baseline_alias_resolves_threshold_and_preserves_usage_for_unsupported_input(
+    monkeypatch: pytest.MonkeyPatch, unresolved_input: bool,
+) -> None:
+    from litellm import utils
+    from litellm.proxy.hooks.autorouter_baseline_cache import finalize_baseline_cache
+    from litellm.proxy.spend_tracking.baseline_accounting import BaselineHistory, advance_baseline_history
+    from litellm.types.utils import ModelResponse, Usage
+
+    model: Final = "gemini/cache-minimum-test"
+    minimum: Final = 8192
+    monkeypatch.setattr(utils, "MINIMUM_PROMPT_CACHE_TOKEN_COUNT_OVERRIDE", None)
+    monkeypatch.setitem(
+        litellm.model_cost,
+        model,
+        {
+            "litellm_provider": "gemini",
+            "mode": "chat",
+            "supports_prompt_caching": True,
+            "prompt_cache_min_tokens": minimum,
+            "max_tokens": minimum * 2,
+            "max_input_tokens": minimum * 2,
+            "max_output_tokens": minimum,
+            "input_cost_per_token": 1e-6,
+            "output_cost_per_token": 2e-6,
+            "cache_read_input_token_cost": 1e-7,
+        },
+    )
+    rig: Final = _Rig(
+        monkeypatch,
+        models=_MESSAGES.validate_python(
+            [
+                *_MODELS[:2],
+                {
+                    **_MODELS[2],
+                    "litellm_params": {"model": model, "api_key": "test-selected"},
+                    "model_info": {**litellm.get_model_info(model=model), "id": "baseline"},
+                },
+            ]
+        ),
+    )
+    logging: Final = rig.logging()
+    request: Final[dict[str, object]] = {
+        **_kwargs(logging),
+        "messages": None if unresolved_input else _MESSAGES.validate_json(_MESSAGES_JSON),
+    }
+    Router._record_routing_decision(
+        request,
+        StandardLoggingRoutingDecision(
+            router_model_name="test-router",
+            router_type="complexity",
+            routed_model="anthropic/claude-sonnet-5",
+            savings_baseline_model="opus",
+            savings_baseline_deployment_id="baseline",
+        ),
+    )
+    await rig.hook.async_pre_call_deployment_hook(request, CallTypes.anthropic_messages)
+    await finalize_baseline_cache(
+        logging, ModelResponse(usage=Usage(prompt_tokens=6000, completion_tokens=10, total_tokens=6010))
+    )
+    captured: Final = logging.baseline_observation
+    assert captured is not None
+    assert captured.baseline_model == "opus" and captured.provider == "gemini"
+    assert captured.observation.minimum_cache_tokens == minimum
+    assert captured.observation.outcome == "complete" and captured.observation.usage is not None
+    if unresolved_input:
+        assert captured.observation.plan is None and captured.observation.reason == "unsupported_cache_request"
+        assert captured.observation.usage.prompt_tokens == 6000
+        return
+    history, cold = advance_baseline_history(BaselineHistory(), (captured.observation,))
+    _, warm = advance_baseline_history(
+        history,
+        (
+            captured.observation.model_copy(
+                update={
+                    "request_id": "cache-minimum-followup",
+                    "started_at": captured.observation.available_at + 1,
+                    "available_at": captured.observation.available_at + 2,
+                }
+            ),
+        ),
+    )
+    for estimate in (*cold, *warm):
+        assert estimate.usage is not None, estimate.reason
+        assert estimate.usage.prompt_tokens_details.cached_tokens == 0
+        assert estimate.usage.prompt_tokens_details.cache_creation_tokens == 0

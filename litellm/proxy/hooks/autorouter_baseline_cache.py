@@ -248,7 +248,7 @@ class AutoRouterBaselineCache(CustomLogger):
             )
             scope: Final = "autorouter-baseline:v3:" + _digest(
                 (
-                    "baseline_request_v2" if estimated else "baseline_request_v3",
+                    "baseline_request_v3" if estimated else "baseline_request_v4",
                     request.user_api_key_hash,
                     session,
                     request.route.router_name,
@@ -486,7 +486,7 @@ async def _capture_native(
             available_at=available,
             outcome="complete",
             baseline_equivalent=same,
-            usage=usage.model_copy(update={"speed": projected.get("speed")})
+            usage=usage.model_copy(update={key: projected.get(key) for key in ("speed", "inference_geo")})
             if usage is not None and not same
             else usage,
             plan=plan,
@@ -563,9 +563,17 @@ async def _capture_estimated(
                 update={
                     "available_at": available,
                     "outcome": "uncertain" if context.invalidated or usage is None else "complete",
-                    "usage": usage,
+                    "usage": usage.model_copy(
+                        update={key: context.estimated_request.get(key) for key in ("speed", "inference_geo")}
+                    )
+                    if usage is not None
+                    and context.estimated_request is not None
+                    and context.capture.provider == "anthropic"
+                    else usage,
                     "plan": plan,
-                    "minimum_cache_tokens": get_prompt_cache_min_tokens(context.capture.baseline_model),
+                    "minimum_cache_tokens": get_prompt_cache_min_tokens(
+                        f"{context.capture.provider}/{context.capture.model}"
+                    ),
                     "assumptions": estimated.assumptions if estimated else (),
                     "reason": context.invalidated
                     or ("missing_usage" if usage is None else "unsupported_cache_request" if plan is None else None),

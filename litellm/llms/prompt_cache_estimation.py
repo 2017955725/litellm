@@ -31,8 +31,10 @@ from litellm.utils import token_counter
 
 _OBJECT: Final = TypeAdapter(dict[str, JsonValue])
 _MESSAGES: Final = TypeAdapter(list[dict[str, JsonValue]])
-_INPUT: Final = TypeAdapter(str | list[dict[str, JsonValue]])
-_SYSTEM: Final = TypeAdapter(str | list[dict[str, JsonValue]] | None)
+_INPUT: Final[TypeAdapter[str | list[dict[str, JsonValue]]]] = TypeAdapter(str | list[dict[str, JsonValue]])
+_SYSTEM: Final[TypeAdapter[str | list[dict[str, JsonValue]] | None]] = TypeAdapter(
+    str | list[dict[str, JsonValue]] | None
+)
 _TTLS: Final = {"5m": 300, "30m": 1800, "1h": 3600, "24h": 86400}
 _COUNT: Final = TypeAdapter(int | None)
 _CONTROLS: Final = ("cache_control", "prompt_cache_breakpoint")
@@ -91,17 +93,21 @@ def prepare_cache_request(
     ):
         return owned
     try:
-        return _prepare_cache_injections(owned, model, provider, native=native)
+        user_agent: Final = AnthropicCacheControlHook.request_user_agent(kwargs)
+        return _prepare_cache_injections(owned, model, provider, native=native, user_agent=user_agent)
     except (ValidationError, ValueError, TypeError):
         return None
 
 
 def _prepare_cache_injections(
-    request: dict[str, JsonValue], model: str, provider: str, *, native: bool
+    request: dict[str, JsonValue], model: str, provider: str, *, native: bool, user_agent: str | None
 ) -> dict[str, JsonValue] | None:
     tools: Final = _MESSAGES.validate_python(request.get("tools") or [])
+    transport: Final = (
+        {"proxy_server_request": {"headers": {"user-agent": user_agent}}} if user_agent is not None else {}
+    )
     if native:
-        native_options: Final = dict(request)
+        native_options: Final[dict[str, object]] = {**request, **transport}
         native_messages, system = prepare_native_messages(
             _MESSAGES.validate_python(request.get("messages")),
             _SYSTEM.validate_python(request.get("system")),
@@ -113,10 +119,10 @@ def _prepare_cache_injections(
         return (
             None
             if native_options.get("cache_control_injection_points")
-            else {**request, "messages": native_messages, "system": system}
+            else _OBJECT.validate_python({**request, "messages": native_messages, "system": system})
         )
     hook: Final = AnthropicCacheControlHook()
-    options: Final = _responses_cache_input(request, hook, model) if "input" in request else dict(request)
+    options: Final = {**(_responses_cache_input(request, hook, model) if "input" in request else request), **transport}
     messages: Final = cast(  # cast-ok: JSON validation retains provider extensions accepted by the shared hook
         list[AllMessageValues], _MESSAGES.validate_python(options.get("messages"))
     )
@@ -131,10 +137,12 @@ def _prepare_cache_injections(
     _, injected, remaining = hook.get_chat_completion_prompt(model, messages, options, None, None, {})
     if remaining.get("cache_control_injection_points"):
         return None
-    return {
-        **{key: value for key, value in request.items() if key not in ("input", "instructions")},
-        "messages": _MESSAGES.validate_python(injected),
-    }
+    return _OBJECT.validate_python(
+        {
+            **{key: value for key, value in request.items() if key not in ("input", "instructions")},
+            "messages": injected,
+        }
+    )
 
 
 def _responses_cache_input(
@@ -153,10 +161,12 @@ def _responses_cache_input(
         {},
     )
     merged: Final = ResponsesAPIRequestUtils.merge_prompt_management_input(original, provisional, marked)
-    return {
-        **_OBJECT.validate_python(deferred),
-        "messages": _MESSAGES.validate_python(resolve_structured_messages(None, {**request, "input": merged})),
-    }
+    return _OBJECT.validate_python(
+        {
+            **_OBJECT.validate_python(deferred),
+            "messages": resolve_structured_messages(None, {**request, "input": merged}),
+        }
+    )
 
 
 def count_prefix_tokens(model: str, text: str) -> int:
@@ -195,9 +205,12 @@ def estimate_cache_plan(
     ):
         return None
     supplied: Final = request.get("messages") or request.get("input")
-    input_messages: Final = _MESSAGES.validate_python(
-        supplied if isinstance(supplied, list) else resolve_structured_messages(None, {"input": supplied})
-    )
+    try:
+        input_messages: Final = _MESSAGES.validate_python(
+            supplied if isinstance(supplied, list) else resolve_structured_messages(None, {"input": supplied})
+        )
+    except (ValidationError, TypeError):
+        return None
     prefix: Final = tuple(
         {"role": "system", "content": request[key]} for key in ("tools", "system", "instructions") if request.get(key)
     )

@@ -2,6 +2,7 @@ from dataclasses import replace
 from typing import Final
 
 import pytest
+from pydantic import JsonValue
 
 import litellm
 from litellm.llms.prompt_cache_estimation import estimate_cache_plan, normalize_cache_usage, prepare_cache_request
@@ -37,6 +38,19 @@ def _usage(*, read: int = 0, write: int = 8000) -> Usage:
             prompt_tokens_details={"cached_tokens": read, "cache_creation_tokens": write},
         )
     )
+
+
+@pytest.mark.parametrize("supplied", (None, [], ["unresolved"], {"unexpected": "input"}))
+def test_unsupported_input_skips_plan_without_discarding_observed_usage(supplied: JsonValue) -> None:
+    usage: Final = _usage()
+    assert estimate_cache_plan({"input": supplied}, "gpt-6-astra", "openai", _PRICES, usage) is None
+    assert usage == _usage()
+
+
+def test_plain_responses_input_remains_estimatable() -> None:
+    captured: Final = estimate_cache_plan({"input": _PROMPT}, "gpt-6-astra", "openai", _PRICES, _usage())
+    assert captured is not None
+    assert captured.plan.total_tokens == _usage().prompt_tokens
 
 
 def _observation(
@@ -288,6 +302,29 @@ def test_injected_native_cache_respects_client_marks_and_the_shared_cap(configur
     assert estimated is not None and len(estimated.plan.breakpoints) == (4 if configured else 3)
     assert all(marker.ttl_seconds == 3600 for marker in estimated.plan.breakpoints[:3])
     assert request["system"] == _PROMPT
+
+
+@pytest.mark.parametrize("user_agent", ("claude-cli/2.1.263 (external, cli)", "ordinary-client"))
+def test_cache_preparation_matches_native_subagent_policy_without_retaining_headers(user_agent: str) -> None:
+    from litellm.llms.anthropic.pass_through.messages.utils import prepare_native_messages
+
+    request: Final = {
+        "messages": [{"role": "user", "content": "unique document"}],
+        "system": "x-anthropic-billing-header: cc_is_subagent=true;",
+        "enable_prompt_caching": True,
+        "proxy_server_request": {"headers": {"User-Agent": user_agent, "authorization": "private-token"}},
+    }
+    messages, system = prepare_native_messages(
+        [{"role": "user", "content": "unique document"}],
+        "x-anthropic-billing-header: cc_is_subagent=true;",
+        {"enable_prompt_caching": True, "proxy_server_request": request["proxy_server_request"]},
+        model="claude-opus-5-5",
+        custom_llm_provider="anthropic",
+    )
+    prepared: Final = prepare_cache_request(request, "claude-opus-5-5", "anthropic", native=True)
+    assert prepared is not None
+    assert (prepared["messages"], prepared["system"]) == (messages, system)
+    assert "proxy_server_request" not in prepared and "private-token" not in str(prepared)
 
 
 @pytest.mark.parametrize("field", NATIVE_ONLY_PARAMETERS)
