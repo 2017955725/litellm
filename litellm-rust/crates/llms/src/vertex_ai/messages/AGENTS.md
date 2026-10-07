@@ -26,7 +26,6 @@
 
 # Known gaps
 
-- `model` is still serialized into the body: `BaseMessagesConfig` returns a typed `MessagesRequest` whose `model` is always written, so dropping it needs a shared wire-body hook in the trait or in core
 - Project and location come only from `VERTEXAI_PROJECT`, `VERTEXAI_LOCATION` and `VERTEX_LOCATION`, because core does not pass `vertex_project`, `vertex_location` or `vertex_credentials` from `litellm_params` to Messages configs yet
 - A project is required up front. Python can take it from the credentials, but that lookup is async and the URL is built synchronously, so a missing project is a configuration error here
 - The model catalog's `supported_regions` override is not applied, since no catalog lookup reaches this adapter, so the location defaults to `us-central1`

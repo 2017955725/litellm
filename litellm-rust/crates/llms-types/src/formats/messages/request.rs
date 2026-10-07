@@ -70,6 +70,13 @@ pub enum MessagesTool {
 }
 
 impl MessagesTool {
+    pub fn definition(&self) -> &ToolDefinition {
+        match self {
+            Self::Builtin(tool) => tool.definition(),
+            Self::Custom(tool) => &tool.definition,
+        }
+    }
+
     pub fn map_definition(self, f: impl FnOnce(ToolDefinition) -> ToolDefinition) -> Self {
         match self {
             Self::Builtin(tool) => Self::Builtin(tool.map_definition(f)),
@@ -158,6 +165,36 @@ pub enum BuiltinMessagesTool {
 }
 
 impl BuiltinMessagesTool {
+    pub fn definition(&self) -> &ToolDefinition {
+        match self {
+            Self::Advisor(definition)
+            | Self::ToolSearchRegex(definition)
+            | Self::ToolSearchBm25(definition)
+            | Self::Custom(definition)
+            | Self::WebSearch(definition)
+            | Self::Computer(definition)
+            | Self::Bash(definition)
+            | Self::TextEditor(definition)
+            | Self::CodeExecution(definition)
+            | Self::WebSearch20260209(definition)
+            | Self::Computer20241022(definition)
+            | Self::Bash20241022(definition)
+            | Self::TextEditor20241022(definition)
+            | Self::TextEditor20250124(definition)
+            | Self::CodeExecution20250522(definition)
+            | Self::Memory(definition)
+            | Self::WebFetch(definition)
+            | Self::WebFetch20260209(definition)
+            | Self::WebFetch20260309(definition)
+            | Self::WebFetch20260318(definition)
+            | Self::WebSearch20260318(definition)
+            | Self::CodeExecution20260120(definition)
+            | Self::CodeExecution20260521(definition)
+            | Self::Computer20251124(definition)
+            | Self::TextEditor20250429(definition) => definition,
+        }
+    }
+
     pub fn map_definition(self, f: impl FnOnce(ToolDefinition) -> ToolDefinition) -> Self {
         match self {
             Self::Advisor(definition) => Self::Advisor(f(definition)),
@@ -784,5 +821,98 @@ mod tests {
             serde_json::to_value(ReasoningEffort::from(level)).unwrap(),
             json!(level.as_str())
         );
+    }
+
+    #[rstest]
+    #[case::omitted(None, json!({}))]
+    #[case::null(Some(json!(null)), json!({"output_config":null}))]
+    #[case::empty(Some(json!({})), json!({"output_config":{}}))]
+    #[case::effort(Some(json!({"effort":"high"})), json!({"output_config":{"effort":"high"}}))]
+    #[case::opaque(Some(json!({"format":{"type":"future","schema":null}})), json!({"output_config":{"format":{"type":"future","schema":null}}}))]
+    fn per_turn_output_config_preserves_extension_presence(
+        #[case] config: Option<Value>,
+        #[case] extension: Value,
+    ) {
+        let message = Message {
+            role: super::super::MessageRole::System,
+            content: MessageContent::Blocks(vec![ContentBlock::text("# Environment")]),
+            extra: config
+                .map(|value| Map::from_iter([("output_config".into(), value)]))
+                .unwrap_or_default(),
+        };
+        let wire = Value::Object(
+            Map::from_iter([
+                ("role".into(), json!("system")),
+                (
+                    "content".into(),
+                    json!([{"type":"text","text":"# Environment"}]),
+                ),
+            ])
+            .into_iter()
+            .chain(extension.as_object().unwrap().clone())
+            .collect(),
+        );
+        assert_eq!(serde_json::to_value(&message).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<Message>(wire).unwrap(), message);
+    }
+
+    #[rstest]
+    fn structured_output_config_keeps_format_and_effort_together() {
+        let config = OutputConfig {
+            effort: Some(Recognized::Known(EffortLevel::Xhigh)),
+            format: Some(Recognized::Known(OutputFormat {
+                format_type: super::super::OutputFormatType::JsonSchema,
+                schema: Some(Recognized::Known(crate::json_schema::JsonSchema::Object(
+                    Box::default(),
+                ))),
+                strict: None,
+                extra: Map::new(),
+            })),
+            extra: Map::from_iter([("task_budget".into(), json!({"type":"tokens","total":4096}))]),
+        };
+        let wire = json!({"effort":"xhigh","format":{"type":"json_schema","schema":{}},"task_budget":{"type":"tokens","total":4096}});
+        assert_eq!(serde_json::to_value(&config).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<OutputConfig>(wire).unwrap(),
+            config
+        );
+    }
+
+    #[rstest]
+    #[case::omitted(None, json!({"type":"adaptive"}))]
+    #[case::summarized(Some(ThinkingDisplay::Summarized), json!({"type":"adaptive","display":"summarized"}))]
+    #[case::omitted_display(Some(ThinkingDisplay::Omitted), json!({"type":"adaptive","display":"omitted"}))]
+    #[case::updates(Some(ThinkingDisplay::Updates), json!({"type":"adaptive","display":"updates"}))]
+    fn native_messages_thinking_display_contract(
+        #[case] display: Option<ThinkingDisplay>,
+        #[case] wire: Value,
+    ) {
+        let thinking = ThinkingConfig::adaptive(display);
+        assert_eq!(serde_json::to_value(&thinking).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<ThinkingConfig>(wire).unwrap(),
+            thinking
+        );
+    }
+
+    #[rstest]
+    #[case::string(json!("hi"))]
+    #[case::scalar(json!(123))]
+    #[case::list(json!([{"role":"user","content":"hello"}]))]
+    #[case::null_content(json!({"role":"user","content":null}))]
+    #[case::scalar_block(json!({"role":"user","content":["not a block"]}))]
+    #[case::system_string_block(json!({"role":"system","content":["tool_addition"]}))]
+    fn malformed_message_entry_is_rejected(#[case] entry: Value) {
+        let wire = json!({"model":"model","messages":[entry,{"role":"user","content":"hello"}]});
+        assert!(serde_json::from_value::<MessagesRequest>(wire).is_err());
+    }
+
+    #[rstest]
+    fn non_string_text_is_rejected_at_request_boundary() {
+        let wire = json!({"model":"model","messages":[{"role":"user","content":[
+            {"type":"text","text":123},
+            {"type":"tool_result","tool_use_id":"x","content":"y"}
+        ]}]});
+        assert!(serde_json::from_value::<MessagesRequest>(wire).is_err());
     }
 }

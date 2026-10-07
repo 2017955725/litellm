@@ -375,7 +375,7 @@ mod tests {
             "system": [{"type": "text", "text": "sys", "cache_control": cache_control}],
             "tools": [{
                 "name": "lookup",
-                "input_schema": {"type": "object", "properties": {"cache_control": {"type": "string"}}},
+                "input_schema": {"type": "object", "properties": {"cache_control": {"type": "string", "ttl": "1h"}}},
                 "cache_control": cache_control
             }],
             "messages": [
@@ -387,7 +387,8 @@ mod tests {
                 ]},
                 {"role": "assistant", "content": [
                     {"type": "tool_use", "id": "t2", "name": "lookup", "input": {"cache_control": {"ttl": "1h"}}}
-                ]}
+                ]},
+                {"role": "user", "content": "a plain string message"}
             ]
         })
     }
@@ -416,8 +417,12 @@ mod tests {
         );
         assert_eq!(cache_controls(&body), vec![json!({"type": "ephemeral"}); 6]);
         assert_eq!(
+            body["messages"][2],
+            json!({"role": "user", "content": "a plain string message"})
+        );
+        assert_eq!(
             body["tools"][0]["input_schema"]["properties"]["cache_control"],
-            json!({"type": "string"})
+            json!({"type": "string", "ttl": "1h"})
         );
         assert_eq!(
             body["messages"][1]["content"][0]["input"],
@@ -589,6 +594,15 @@ mod tests {
 
     #[rstest]
     #[case::bare_host("https://h.example", "https://h.example/v1/messages")]
+    #[case::version_no_slash("https://host/v1", "https://host/v1/messages")]
+    #[case::anthropic_surface(
+        "https://api.deepseek.com/anthropic",
+        "https://api.deepseek.com/anthropic/v1/messages"
+    )]
+    #[case::anthropic_version(
+        "https://api.deepseek.com/anthropic/v1",
+        "https://api.deepseek.com/anthropic/v1/messages"
+    )]
     #[case::version_suffix("https://h.example/v1/", "https://h.example/v1/messages")]
     #[case::complete_endpoint("https://h.example/x/v1/messages", "https://h.example/x/v1/messages")]
     fn deployment_url_completes_the_given_base(#[case] base: &str, #[case] expected: &str) {
@@ -794,6 +808,313 @@ mod tests {
                 .iter()
                 .map(|name| name.to_string())
                 .collect::<Vec<_>>()
+        );
+    }
+    #[rstest]
+    #[case::deployment(OPENAI_LIKE_MESSAGES_CONFIG)]
+    #[case::registry(REGISTRY)]
+    fn test_reasoning_effort_budget_capped_for_openai_like_messages_upstream(
+        #[case] config: OpenAILikeMessagesConfig,
+    ) {
+        use litellm_llms_types::formats::chat_completions::ReasoningEffort;
+        use litellm_llms_types::formats::messages::{
+            Message, MessageContent, MessageRole, ThinkingConfig,
+        };
+        let request = MessagesRequest {
+            model: "unregistered-model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("hello".into()),
+                extra: Map::new(),
+            }],
+            params: MessagesOptionalParams {
+                max_tokens: Some(4000),
+                reasoning_effort: Some(Recognized::Known(ReasoningEffort::Xhigh)),
+                ..Default::default()
+            },
+        };
+        let result = config
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        assert_eq!(
+            result.params.thinking,
+            Some(Recognized::Known(ThinkingConfig::enabled(3999)))
+        );
+        assert!(result.params.reasoning_effort.is_none());
+        assert_eq!(result.params.max_tokens, Some(4000));
+    }
+    fn native_request(params: MessagesOptionalParams) -> MessagesRequest {
+        use litellm_llms_types::formats::messages::{Message, MessageContent, MessageRole};
+        MessagesRequest {
+            model: "some-model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("hello".into()),
+                extra: Map::new(),
+            }],
+            params,
+        }
+    }
+
+    #[rstest]
+    #[case::context_management(
+        Some(litellm_llms_types::formats::messages::ContextManagement {
+            edits: Some(vec![Recognized::Known(litellm_llms_types::formats::messages::ContextEdit::ClearToolUses { extra: Map::new() })]),
+            ..Default::default()
+        }), None, &[], "context-management-2025-06-27"
+    )]
+    #[case::fast_mode(None, Some(litellm_llms_types::formats::messages::Speed::Fast), &[], "fast-mode-2026-02-01")]
+    #[case::caller_and_fast(None, Some(litellm_llms_types::formats::messages::Speed::Fast), &[("Anthropic-Beta", "caller-flag")], "caller-flag,fast-mode-2026-02-01")]
+    fn compatible_feature_betas_are_merged_without_filtering(
+        #[values(OPENAI_LIKE_MESSAGES_CONFIG, REGISTRY)] config: OpenAILikeMessagesConfig,
+        #[case] context: Option<litellm_llms_types::formats::messages::ContextManagement>,
+        #[case] speed: Option<litellm_llms_types::formats::messages::Speed>,
+        #[case] caller: &[(&str, &str)],
+        #[case] expected: &str,
+    ) {
+        let request = native_request(MessagesOptionalParams {
+            max_tokens: Some(16),
+            context_management: context.map(Recognized::Known),
+            speed: speed.map(Recognized::Known),
+            ..Default::default()
+        });
+        assert_eq!(
+            config.request_headers(headers(caller), &request),
+            headers(&[("anthropic-beta", expected)])
+        );
+    }
+
+    #[rstest]
+    #[case::adaptive(litellm_llms_types::formats::messages::ThinkingConfig::adaptive(None))]
+    #[case::enabled(litellm_llms_types::formats::messages::ThinkingConfig::Enabled(
+        Default::default()
+    ))]
+    #[case::disabled(litellm_llms_types::formats::messages::ThinkingConfig::Disabled(
+        Default::default()
+    ))]
+    fn native_thinking_and_effort_survive_without_catalog_registration(
+        #[case] thinking: litellm_llms_types::formats::messages::ThinkingConfig,
+    ) {
+        use litellm_llms_types::formats::messages::{EffortLevel, OutputConfig};
+        let request = native_request(MessagesOptionalParams {
+            max_tokens: Some(4096),
+            thinking: Some(Recognized::Known(thinking)),
+            output_config: Some(Recognized::Known(OutputConfig {
+                effort: Some(Recognized::Known(EffortLevel::High)),
+                ..Default::default()
+            })),
+            ..Default::default()
+        });
+        let expected = request.clone();
+        let result = OPENAI_LIKE_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        assert_eq!(result, expected);
+    }
+
+    #[rstest]
+    fn request_retains_the_anthropic_shape() {
+        use litellm_llms_types::formats::messages::{
+            Message, MessageContent, MessageRole, SystemPrompt, ThinkingConfig,
+        };
+        use litellm_llms_types::json_schema::{JsonSchema, JsonSchemaObject, JsonSchemaType};
+        let request = MessagesRequest {
+            model: "some-model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Blocks(vec![ContentBlock {
+                    cache_control: Some(Nullable::Value(CacheControl {
+                        cache_type: Some(Nullable::Value("ephemeral".into())),
+                        ..Default::default()
+                    })),
+                    ..ContentBlock::text("Summarize this")
+                }]),
+                extra: Map::new(),
+            }],
+            params: MessagesOptionalParams {
+                max_tokens: Some(256),
+                system: Some(SystemPrompt::Text("You are a careful assistant".into())),
+                thinking: Some(Recognized::Known(ThinkingConfig::enabled(1024))),
+                temperature: Some(0.3),
+                stream: Some(false),
+                tools: Some(vec![Recognized::Known(MessagesTool::Custom(
+                    litellm_llms_types::formats::messages::CustomTool::try_from(ToolDefinition {
+                        name: Some(Recognized::Known("lookup".into())),
+                        input_schema: Some(Recognized::Known(JsonSchema::Object(Box::new(
+                            JsonSchemaObject {
+                                schema_type: Some(Recognized::Known(JsonSchemaType::Name(
+                                    "object".into(),
+                                ))),
+                                ..Default::default()
+                            },
+                        )))),
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                ))]),
+                ..Default::default()
+            },
+        };
+        let expected = request.clone();
+        let result = OPENAI_LIKE_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        assert_eq!(result, expected);
+        let body = OPENAI_LIKE_MESSAGES_CONFIG.request_body(&result).unwrap();
+        assert_eq!(
+            body,
+            json!({
+                "model": "some-model", "max_tokens": 256,
+                "messages": [{"role": "user", "content": [{"type": "text", "text": "Summarize this", "cache_control": {"type": "ephemeral"}}]}],
+                "system": "You are a careful assistant", "thinking": {"type": "enabled", "budget_tokens": 1024},
+                "temperature": 0.3, "tools": [{"name": "lookup", "input_schema": {"type": "object"}}], "stream": false
+            })
+        );
+    }
+
+    #[rstest]
+    #[case::lowercase(&[("authorization", "Bearer caller-token"), ("anthropic-version", "2024-10-22"), ("content-type", "application/json")])]
+    #[case::standard_case(&[("Authorization", "Bearer caller-token"), ("Anthropic-Version", "2024-10-22"), ("Content-Type", "application/json")])]
+    fn caller_headers_keep_their_values_and_casing(#[case] caller: &[(&str, &str)]) {
+        let validated = auth_for(
+            OPENAI_LIKE_MESSAGES_CONFIG,
+            caller,
+            Some("sk-test"),
+            &|_| None,
+        );
+        assert!(matches!(validated.auth, AuthScheme::Forwarded));
+        assert_eq!(
+            litellm_http::request::with_default_headers(
+                validated.headers,
+                OPENAI_LIKE_MESSAGES_CONFIG.default_headers()
+            ),
+            headers(caller)
+        );
+    }
+    #[rstest]
+    fn compatible_cache_projection_preserves_the_callers_input() {
+        use litellm_llms_types::formats::messages::{Message, MessageContent, MessageRole};
+        let block = ContentBlock {
+            cache_control: Some(Nullable::Value(CacheControl {
+                cache_type: Some(Nullable::Value("ephemeral".into())),
+                ttl: Some(Nullable::Value("1h".into())),
+                ..Default::default()
+            })),
+            ..ContentBlock::text("hi")
+        };
+        let original = MessagesRequest {
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Blocks(vec![block]),
+                extra: Map::new(),
+            }],
+            ..native_request(MessagesOptionalParams {
+                max_tokens: Some(16),
+                system: Some(litellm_llms_types::formats::messages::SystemPrompt::Blocks(
+                    vec![ContentBlock {
+                        cache_control: Some(Nullable::Value(CacheControl {
+                            cache_type: Some(Nullable::Value("ephemeral".into())),
+                            ttl: Some(Nullable::Value("5m".into())),
+                            ..Default::default()
+                        })),
+                        ..ContentBlock::text("System")
+                    }],
+                )),
+                ..Default::default()
+            })
+        };
+        let snapshot = original.clone();
+        let result = OPENAI_LIKE_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(
+                original.clone(),
+                &MessagesTransformContext::default(),
+            )
+            .unwrap();
+        assert_eq!(original, snapshot);
+        let native = crate::anthropic::messages::transformation::ANTHROPIC_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(
+                original.clone(),
+                &MessagesTransformContext::default(),
+            )
+            .unwrap();
+        assert_eq!(native, original);
+        assert_eq!(
+            serde_json::to_value(&native).unwrap()["system"][0]["cache_control"],
+            json!({"type": "ephemeral", "ttl": "5m"})
+        );
+        assert_eq!(
+            serde_json::to_value(&original).unwrap()["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral", "ttl": "1h"})
+        );
+        assert_eq!(
+            serde_json::to_value(result).unwrap()["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+    }
+
+    #[rstest]
+    fn compatible_system_output_config_injects_per_turn_beta() {
+        use litellm_llms_types::formats::messages::{Message, MessageContent, MessageRole};
+        let request = MessagesRequest {
+            messages: vec![Message {
+                role: MessageRole::System,
+                content: MessageContent::Text("# Environment".into()),
+                extra: [("output_config".into(), json!({"effort": "low"}))]
+                    .into_iter()
+                    .collect(),
+            }],
+            ..native_request(MessagesOptionalParams {
+                max_tokens: Some(16),
+                ..Default::default()
+            })
+        };
+        assert_eq!(
+            REGISTRY.request_headers(Vec::new(), &request),
+            headers(&[("anthropic-beta", "per-turn-control-2026-07-01")])
+        );
+    }
+    #[rstest]
+    fn advisor_history_is_removed_on_the_compatible_path() {
+        use litellm_llms_types::formats::messages::{Message, MessageContent, MessageRole};
+        let text = ContentBlock::text("thinking out loud");
+        let request = MessagesRequest {
+            messages: vec![Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Blocks(vec![
+                    text.clone(),
+                    ContentBlock {
+                        block_type: Some(Nullable::Value(ContentBlockType::ServerToolUse)),
+                        payload: ContentBlockPayload {
+                            id: Some(Nullable::Value("advisor_1".into())),
+                            name: Some(Nullable::Value("advisor".into())),
+                            input: Some(Recognized::Known(Map::new())),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    ContentBlock {
+                        block_type: Some(Nullable::Value(ContentBlockType::AdvisorToolResult)),
+                        tool_use_id: Some(Nullable::Value("advisor_1".into())),
+                        payload: ContentBlockPayload {
+                            content: Some(Recognized::Known(BlockContent::Text("stale".into()))),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                ]),
+                extra: Map::new(),
+            }],
+            ..native_request(MessagesOptionalParams {
+                max_tokens: Some(64),
+                ..Default::default()
+            })
+        };
+        let result = OPENAI_LIKE_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        assert_eq!(
+            result.messages[0].content,
+            MessageContent::Blocks(vec![text])
         );
     }
 }

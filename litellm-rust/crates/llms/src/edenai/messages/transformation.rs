@@ -453,4 +453,195 @@ mod tests {
             .collect();
         assert_eq!(undeclared, Vec::<&String>::new());
     }
+    #[rstest]
+    fn explicit_endpoint_wins_over_the_environment() {
+        let lookup =
+            |name: &str| (name == EDENAI_API_BASE_ENV).then(|| "https://api.eu.example/v3".into());
+        assert_eq!(
+            EDENAI_MESSAGES_CONFIG
+                .get_complete_url(Some("https://eden.internal/v3/"), "native-model", &lookup)
+                .unwrap(),
+            "https://eden.internal/v3/v1/messages"
+        );
+    }
+
+    #[rstest]
+    fn native_payload_is_forwarded_untranslated() {
+        use litellm_llms_types::{
+            formats::messages::{
+                CacheControl, ContentBlock, Message, MessageContent, MessageRole,
+                MessagesOptionalParams, SystemPrompt, ThinkingConfig,
+            },
+            recognized::Recognized,
+            serde_compat::Nullable,
+        };
+        let request = MessagesRequest {
+            model: "openai/gpt-4.1-nano".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("Say OK".into()),
+                extra: Default::default(),
+            }],
+            params: MessagesOptionalParams {
+                max_tokens: Some(16),
+                system: Some(SystemPrompt::Blocks(vec![ContentBlock {
+                    cache_control: Some(Nullable::Value(CacheControl {
+                        cache_type: Some(Nullable::Value("ephemeral".into())),
+                        ..Default::default()
+                    })),
+                    ..ContentBlock::text("Be terse")
+                }])),
+                thinking: Some(Recognized::Known(ThinkingConfig::enabled(1024))),
+                ..Default::default()
+            },
+        };
+        let expected = request.clone();
+        let result = EDENAI_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        assert_eq!(result, expected);
+        assert_eq!(
+            EDENAI_MESSAGES_CONFIG.request_body(&result).unwrap(),
+            json!({
+                "model": "openai/gpt-4.1-nano", "messages": [{"role": "user", "content": "Say OK"}], "max_tokens": 16,
+                "system": [{"type": "text", "text": "Be terse", "cache_control": {"type": "ephemeral"}}],
+                "thinking": {"type": "enabled", "budget_tokens": 1024}
+            })
+        );
+    }
+
+    #[rstest]
+    #[case::environment(None, &[])]
+    #[case::explicit(Some("explicit-key"), &[])]
+    #[case::caller(None, &[("Authorization", "Bearer caller-token")])]
+    #[tokio::test]
+    async fn authenticated_headers_keep_bearer_and_anthropic_defaults(
+        #[case] api_key: Option<&str>,
+        #[case] caller: &[(&str, &str)],
+    ) {
+        use crate::base_llm::auth::resolve_auth;
+        use litellm_auth::AuthServices;
+        let lookup = |name: &str| (name == EDENAI_API_KEY_ENV).then(|| "environment-key".into());
+        let environment = validated(caller, api_key, &lookup).unwrap();
+        let authenticated = resolve_auth(&AuthServices::default(), environment, &lookup)
+            .await
+            .unwrap();
+        let actual = litellm_http::request::with_default_headers(
+            authenticated.headers,
+            EDENAI_MESSAGES_CONFIG.default_headers(),
+        );
+        let expected_auth = if caller.is_empty() {
+            (
+                "authorization",
+                format!("Bearer {}", api_key.unwrap_or("environment-key")),
+            )
+        } else {
+            ("Authorization", "Bearer caller-token".into())
+        };
+        assert_eq!(
+            actual,
+            headers(&[
+                (expected_auth.0, expected_auth.1.as_str()),
+                ("anthropic-version", "2023-06-01"),
+                ("content-type", "application/json")
+            ])
+        );
+    }
+    #[rstest]
+    #[tokio::test]
+    async fn native_stream_retains_start_text_and_stop_events() {
+        use crate::base_llm::messages::streaming::{
+            anthropic_sse_event_stream, encode_anthropic_sse,
+        };
+        use futures_util::{StreamExt, TryStreamExt, stream};
+        use litellm_llms_types::{
+            formats::messages::{
+                Message, MessageContent, MessageRole, MessageType, MessagesOptionalParams,
+                MessagesUsage,
+                streaming::{
+                    MessagesContentBlockDelta, MessagesStreamEvent, MessagesStreamMessage,
+                },
+            },
+            serde_compat::Nullable,
+        };
+        let request = MessagesRequest {
+            model: "openai/gpt-4.1-nano".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("Say OK".into()),
+                extra: Default::default(),
+            }],
+            params: MessagesOptionalParams {
+                max_tokens: Some(16),
+                stream: Some(true),
+                ..Default::default()
+            },
+        };
+        let result = EDENAI_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        assert_eq!(
+            EDENAI_MESSAGES_CONFIG.request_body(&result).unwrap()["stream"],
+            true
+        );
+        assert!(EDENAI_MESSAGES_CONFIG.stream_decoder().is_none());
+        let events = vec![
+            MessagesStreamEvent::MessageStart {
+                message: Box::new(MessagesStreamMessage {
+                    id: "msg_eden_1".into(),
+                    message_type: MessageType::Message,
+                    role: MessageRole::Assistant,
+                    model: "openai/gpt-4.1-nano".into(),
+                    content: Vec::new(),
+                    stop_reason: None,
+                    stop_sequence: None,
+                    usage: MessagesUsage {
+                        input_tokens: Some(Nullable::Value(0)),
+                        output_tokens: Some(Nullable::Value(0)),
+                        ..Default::default()
+                    },
+                    safeguard_results: None,
+                    extra: Default::default(),
+                }),
+                extra: Default::default(),
+            },
+            MessagesStreamEvent::ContentBlockDelta {
+                index: 0,
+                delta: MessagesContentBlockDelta::TextDelta {
+                    text: "OK".into(),
+                    extra: Default::default(),
+                },
+                extra: Default::default(),
+            },
+            MessagesStreamEvent::MessageStop {
+                usage: None,
+                extra: Default::default(),
+            },
+        ];
+        let frames = events
+            .iter()
+            .map(encode_anthropic_sse)
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+        let expected_payloads = [
+            json!({"type": "message_start", "message": {"id": "msg_eden_1", "type": "message", "role": "assistant", "model": "openai/gpt-4.1-nano", "content": [], "stop_reason": null, "stop_sequence": null, "usage": {"input_tokens": 0, "output_tokens": 0}}}),
+            json!({"type": "content_block_delta", "index": 0, "delta": {"type": "text_delta", "text": "OK"}}),
+            json!({"type": "message_stop"}),
+        ];
+        for (frame, expected) in frames.iter().zip(expected_payloads) {
+            let wire = std::str::from_utf8(frame).unwrap();
+            let event_name = expected["type"].as_str().unwrap();
+            assert!(wire.starts_with(&format!("event: {event_name}\n")));
+            let data = wire
+                .lines()
+                .find_map(|line| line.strip_prefix("data: "))
+                .unwrap();
+            assert_eq!(serde_json::from_str::<Value>(data).unwrap(), expected);
+        }
+        let decoded = anthropic_sse_event_stream(stream::iter(frames.into_iter().map(Ok)).boxed())
+            .try_collect::<Vec<_>>()
+            .await
+            .unwrap();
+        assert_eq!(decoded, events);
+    }
 }

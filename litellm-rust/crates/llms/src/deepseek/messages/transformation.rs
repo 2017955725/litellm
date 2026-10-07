@@ -470,4 +470,158 @@ mod tests {
             .collect();
         assert_eq!(undeclared, Vec::<&String>::new());
     }
+    #[rstest]
+    #[case::adaptive(litellm_llms_types::formats::messages::ThinkingConfig::adaptive(None))]
+    #[case::disabled(litellm_llms_types::formats::messages::ThinkingConfig::Disabled(
+        Default::default()
+    ))]
+    #[case::enabled(litellm_llms_types::formats::messages::ThinkingConfig::enabled(2048))]
+    fn test_native_thinking_effort_and_sampling_do_not_depend_on_model_registration(
+        #[case] thinking: litellm_llms_types::formats::messages::ThinkingConfig,
+    ) {
+        use litellm_llms_types::formats::messages::{
+            EffortLevel, Message, MessageContent, MessageRole, MessagesOptionalParams, OutputConfig,
+        };
+        use litellm_llms_types::recognized::Recognized;
+        let params = MessagesOptionalParams {
+            max_tokens: Some(4096),
+            thinking: Some(Recognized::Known(thinking)),
+            output_config: Some(Recognized::Known(OutputConfig {
+                effort: Some(Recognized::Known(EffortLevel::High)),
+                ..Default::default()
+            })),
+            temperature: Some(0.7),
+            ..Default::default()
+        };
+        let request = MessagesRequest {
+            model: "unregistered-native-model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("hello".into()),
+                extra: Default::default(),
+            }],
+            params: params.clone(),
+        };
+        let result = DEEPSEEK_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        assert_eq!(result.params.thinking, params.thinking);
+        assert_eq!(result.params.output_config, params.output_config);
+        assert_eq!(result.params.temperature, params.temperature);
+    }
+    #[rstest]
+    fn native_tools_and_thinking_survive_a_small_output_limit() {
+        use litellm_llms_types::json_schema::{JsonSchema, JsonSchemaObject, JsonSchemaType};
+        use litellm_llms_types::{
+            formats::messages::{
+                BuiltinMessagesTool, ContentBlock, ContentBlockPayload, ContentBlockType,
+                CustomTool, Message, MessageContent, MessageRole, MessagesOptionalParams,
+                ThinkingConfig, ToolDefinition,
+            },
+            recognized::Recognized,
+            serde_compat::Nullable,
+        };
+        let custom = ToolDefinition {
+            name: Some(Recognized::Known("get_weather".into())),
+            description: Some(Recognized::Known("Get weather".into())),
+            input_schema: Some(Recognized::Known(JsonSchema::Object(Box::new(
+                JsonSchemaObject {
+                    schema_type: Some(Recognized::Known(JsonSchemaType::Name("object".into()))),
+                    ..Default::default()
+                },
+            )))),
+            ..Default::default()
+        };
+        let web = ToolDefinition {
+            name: Some(Recognized::Known("web_search".into())),
+            max_uses: Some(Recognized::Known(1)),
+            ..Default::default()
+        };
+        let messages = vec![
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("Use the tool.".into()),
+                extra: Default::default(),
+            },
+            Message {
+                role: MessageRole::Assistant,
+                content: MessageContent::Blocks(vec![
+                    ContentBlock {
+                        block_type: Some(Nullable::Value(ContentBlockType::Thinking)),
+                        payload: ContentBlockPayload {
+                            thinking: Some(Nullable::Value("I should call the tool.".into())),
+                            signature: Some(Nullable::Value("sig".into())),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                    ContentBlock {
+                        block_type: Some(Nullable::Value(ContentBlockType::ToolUse)),
+                        payload: ContentBlockPayload {
+                            id: Some(Nullable::Value("toolu_123".into())),
+                            name: Some(Nullable::Value("get_weather".into())),
+                            input: Some(Recognized::Known(
+                                [("city".into(), json!("Sao Paulo"))].into_iter().collect(),
+                            )),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    },
+                ]),
+                extra: Default::default(),
+            },
+            Message {
+                role: MessageRole::User,
+                content: MessageContent::Blocks(vec![ContentBlock {
+                    block_type: Some(Nullable::Value(ContentBlockType::ToolResult)),
+                    tool_use_id: Some(Nullable::Value("toolu_123".into())),
+                    payload: ContentBlockPayload {
+                        content: Some(Recognized::Known(
+                            litellm_llms_types::formats::messages::BlockContent::Text(
+                                "Sunny".into(),
+                            ),
+                        )),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }]),
+                extra: Default::default(),
+            },
+        ];
+        let request = MessagesRequest {
+            model: "deepseek-v4-pro".into(),
+            messages: messages.clone(),
+            params: MessagesOptionalParams {
+                max_tokens: Some(100),
+                thinking: Some(Recognized::Known(ThinkingConfig::enabled(1024))),
+                tools: Some(vec![
+                    Recognized::Known(MessagesTool::Builtin(BuiltinMessagesTool::Custom(
+                        custom.clone(),
+                    ))),
+                    Recognized::Known(MessagesTool::Builtin(
+                        BuiltinMessagesTool::WebSearch20260209(web.clone()),
+                    )),
+                ]),
+                ..Default::default()
+            },
+        };
+        let result = DEEPSEEK_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        assert_eq!(result.messages, messages);
+        assert_eq!(
+            result.params.thinking,
+            Some(Recognized::Known(ThinkingConfig::enabled(1024)))
+        );
+        assert_eq!(result.params.max_tokens, Some(100));
+        assert_eq!(
+            result.params.tools,
+            Some(vec![
+                Recognized::Known(MessagesTool::Custom(CustomTool::try_from(custom).unwrap())),
+                Recognized::Known(MessagesTool::Builtin(
+                    BuiltinMessagesTool::WebSearch20260209(web)
+                ))
+            ])
+        );
+    }
 }

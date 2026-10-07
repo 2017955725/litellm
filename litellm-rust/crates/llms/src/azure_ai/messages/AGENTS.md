@@ -27,7 +27,7 @@ This directory owns Azure's Messages adapter: its endpoints, authentication poli
 # Known gaps
 
 - Core maps every `azure_ai` model to this adapter, while Python uses it only when the lowercased model name contains `claude` and sends the rest through the chat-completions bridge
-- Python also reads `litellm.api_key`, `litellm.azure_key` and `AZURE_OPENAI_API_KEY`, renames a forwarded `api-key` to `x-api-key`, and mints an Entra ID token from tenant, client and secret params. Rust does none of these
+- Python also reads `litellm.api_key`, `litellm.azure_key` and `AZURE_OPENAI_API_KEY` and mints an Entra ID token from tenant, client and secret params. Rust does none of these
 
 # References
 

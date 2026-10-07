@@ -313,3 +313,69 @@ pub enum ContainerReference {
     Id(String),
     Parameters(Box<MessagesContainer>),
 }
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use rstest::{fixture, rstest};
+    use serde_json::json;
+
+    use super::*;
+    use crate::json_schema::{JsonSchemaObject, JsonSchemaType};
+
+    #[fixture]
+    fn result_format() -> OutputFormat {
+        OutputFormat {
+            format_type: OutputFormatType::JsonSchema,
+            schema: Some(Recognized::Known(JsonSchema::Object(Box::new(
+                JsonSchemaObject {
+                    schema_type: Some(Recognized::Known(JsonSchemaType::Name("object".into()))),
+                    properties: Some(Recognized::Known(BTreeMap::from([(
+                        "result".into(),
+                        Recognized::Known(JsonSchema::Object(Box::new(JsonSchemaObject {
+                            schema_type: Some(Recognized::Known(JsonSchemaType::Name(
+                                "string".into(),
+                            ))),
+                            ..Default::default()
+                        }))),
+                    )]))),
+                    ..Default::default()
+                },
+            )))),
+            strict: None,
+            extra: Map::new(),
+        }
+    }
+
+    #[rstest]
+    fn anthropic_messages_structured_outputs_preserve_result_schema(result_format: OutputFormat) {
+        let wire = json!({"type":"json_schema","schema":{"type":"object","properties":{"result":{"type":"string"}}}});
+        assert_eq!(serde_json::to_value(&result_format).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<OutputFormat>(wire).unwrap(),
+            result_format
+        );
+    }
+
+    #[rstest]
+    #[case::omitted(None, json!({}))]
+    #[case::null(Some(Recognized::Unrecognized(Value::Null)), json!({"user_id":null}))]
+    #[case::empty(Some(Recognized::Known(String::new())), json!({"user_id":""}))]
+    #[case::known(Some(Recognized::Known("user_1".into())), json!({"user_id":"user_1"}))]
+    #[case::opaque(Some(Recognized::Unrecognized(json!({"nested":null}))), json!({"user_id":{"nested":null}}))]
+    fn metadata_user_id_preserves_presence(
+        #[case] user_id: Option<Recognized<String>>,
+        #[case] wire: Value,
+    ) {
+        let metadata = MessagesMetadata {
+            user_id,
+            ..Default::default()
+        };
+        assert_eq!(serde_json::to_value(&metadata).unwrap(), wire);
+        assert_eq!(
+            serde_json::from_value::<MessagesMetadata>(wire).unwrap(),
+            metadata
+        );
+    }
+}

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
-from typing import Final, cast  # noqa: TID251  # narrows the normalized native payload to the public TypedDict
+from typing import Final, Literal, cast  # noqa: TID251  # narrows the normalized native payload to the public TypedDict
 
 import httpx
 from pydantic import TypeAdapter, ValidationError
@@ -15,6 +15,27 @@ from litellm.rust_bridge.messages.entrypoints import LiteLLMMessagesRequest
 from litellm.types.llms.anthropic_messages.anthropic_response import AnthropicMessagesResponse
 
 _DROP_PATHS: Final = TypeAdapter(list[object])
+_METADATA_SOURCE: Final = TypeAdapter(dict[object, object])
+
+
+@dataclass(frozen=True, slots=True)
+class BedrockMetadataSource:
+    identity: tuple[tuple[str, str], ...]
+    spend_logs: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BedrockRequestMetadataInput:
+    allowed_fields: tuple[str, ...]
+    sources: tuple[BedrockMetadataSource, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class BedrockMessagesConnection:
+    api_base: str | None
+    region: str | None
+    model_id: str | None
+    workspace_id: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -37,6 +58,11 @@ class ModelCapabilities:
     supports_sampling_params: bool
     supports_speed: bool
     effort_tiers: EffortTiers
+    supports_mid_conversation_system: bool = False
+    supports_cache_control_ttl: bool = False
+    supports_native_structured_output: bool = False
+    supports_tool_search: bool = False
+    effort_ceiling: Literal["low", "medium", "high", "xhigh", "max"] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -45,6 +71,8 @@ class MessagesShaping:
     drop_params: bool
     reasoning_auto_summary: bool
     additional_drop_params: Sequence[str]
+    bedrock_request_metadata: BedrockRequestMetadataInput | None = None
+    bedrock_connection: BedrockMessagesConnection | None = None
 
 
 def response(value: Mapping[str, object]) -> AnthropicMessagesResponse:
@@ -87,6 +115,12 @@ def _resolved_provider(model: str, custom_llm_provider: str | None) -> tuple[str
 def model_capabilities(model: str, custom_llm_provider: str | None) -> ModelCapabilities:
     from litellm.llms.anthropic.chat.transformation import AnthropicConfig
     from litellm.llms.anthropic.common_utils import AnthropicModelInfo
+    from litellm.llms.bedrock.common_utils import (
+        _bedrock_model_supports,
+        _get_bedrock_output_config_effort_ceiling,
+        bedrock_supports_tool_search,
+        is_claude_4_5_on_bedrock,
+    )
 
     resolved_model, provider = _resolved_provider(model, custom_llm_provider)
 
@@ -104,6 +138,12 @@ def model_capabilities(model: str, custom_llm_provider: str | None) -> ModelCapa
         supports_output_config=supports("supports_output_config"),
         supports_sampling_params=AnthropicModelInfo._supports_sampling_params(resolved_model),  # pyright: ignore[reportPrivateUsage]  # same gate the handler applies
         supports_speed=AnthropicConfig._model_supports_speed_param(resolved_model, provider),  # pyright: ignore[reportPrivateUsage]  # same gate the handler applies
+        supports_mid_conversation_system=supports("supports_mid_conversation_system"),
+        supports_cache_control_ttl=provider == "bedrock" and is_claude_4_5_on_bedrock(resolved_model),
+        supports_native_structured_output=provider == "bedrock"
+        and _bedrock_model_supports(resolved_model, "supports_native_structured_output"),
+        supports_tool_search=provider == "bedrock" and bedrock_supports_tool_search(resolved_model),
+        effort_ceiling=_get_bedrock_output_config_effort_ceiling(resolved_model) if provider == "bedrock" else None,
         effort_tiers=EffortTiers(
             minimal=tier("minimal"),
             low=tier("low"),
@@ -127,6 +167,59 @@ def _additional_drop_params(kwargs: Mapping[str, object]) -> tuple[str, ...]:
     return tuple(path for path in configured if isinstance(path, str))
 
 
+def _text_metadata_pairs(value: object) -> tuple[tuple[str, str], ...]:
+    try:
+        source: Final = _METADATA_SOURCE.validate_python(value)
+    except ValidationError:
+        return ()
+    return tuple((key, text) for key, text in source.items() if isinstance(key, str) and isinstance(text, str))
+
+
+def _bedrock_metadata_source(value: object) -> BedrockMetadataSource:
+    try:
+        source: Final = _METADATA_SOURCE.validate_python(value)
+    except ValidationError:
+        return BedrockMetadataSource((), ())
+    return BedrockMetadataSource(
+        identity=tuple((key, text) for key, text in source.items() if isinstance(key, str) and isinstance(text, str)),
+        spend_logs=_text_metadata_pairs(source.get("spend_logs_metadata")),
+    )
+
+
+def _bedrock_request_metadata(
+    model: str, custom_llm_provider: str | None, kwargs: Mapping[str, object]
+) -> BedrockRequestMetadataInput | None:
+    configured: Final = litellm.bedrock_request_metadata_fields
+    if not configured:
+        return None
+    _, provider = _resolved_provider(model, custom_llm_provider)
+    if provider != "bedrock":
+        return None
+    return BedrockRequestMetadataInput(
+        allowed_fields=tuple(configured),
+        sources=tuple(_bedrock_metadata_source(kwargs.get(name)) for name in ("metadata", "litellm_metadata")),
+    )
+
+
+def _bedrock_connection(
+    model: str, custom_llm_provider: str | None, kwargs: Mapping[str, object]
+) -> BedrockMessagesConnection | None:
+    _, provider = _resolved_provider(model, custom_llm_provider)
+    if provider != "bedrock":
+        return None
+
+    def text(name: str) -> str | None:
+        value: Final = kwargs.get(name)
+        return value if isinstance(value, str) else None
+
+    return BedrockMessagesConnection(
+        api_base=text("aws_bedrock_runtime_endpoint"),
+        region=text("aws_region_name"),
+        model_id=text("model_id"),
+        workspace_id=text("aws_bedrock_project_id"),
+    )
+
+
 def shaping(model: str, custom_llm_provider: str | None, kwargs: Mapping[str, object]) -> dict[str, object]:
     return asdict(
         MessagesShaping(
@@ -134,5 +227,7 @@ def shaping(model: str, custom_llm_provider: str | None, kwargs: Mapping[str, ob
             drop_params=_drop_params(kwargs),
             reasoning_auto_summary=is_reasoning_auto_summary_enabled(),
             additional_drop_params=_additional_drop_params(kwargs),
+            bedrock_request_metadata=_bedrock_request_metadata(model, custom_llm_provider, kwargs),
+            bedrock_connection=_bedrock_connection(model, custom_llm_provider, kwargs),
         )
     )

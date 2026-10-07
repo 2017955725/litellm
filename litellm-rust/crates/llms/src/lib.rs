@@ -14,6 +14,7 @@ pub mod mistral;
 pub mod openai;
 pub mod openai_like;
 pub mod reducto;
+pub mod sail;
 pub mod tencent;
 pub mod vertex_ai;
 

@@ -17,11 +17,8 @@
 
 # Known gaps
 
-- `transform_anthropic_messages_request` returns `Unsupported` and core calls it on every request, so every Bedrock Messages call fails until the Bedrock body shaping (version, betas, thinking injection, cache_control, output_config, tools, context_management, allowlist) is ported
 - Core maps every Bedrock model to this adapter without Python's `claude` and `converse/` gate
-- Region and credentials resolve from an empty param map, so `aws_region_name` and `aws_bedrock_runtime_endpoint` are ignored
-- The `model_id` param override and URL-encoding of ARN model IDs (inference profiles, provisioned throughput) are missing
-- The proxy-owned `X-Amzn-Bedrock-Request-Metadata` header from `bedrock_request_metadata_fields` is not added, and caller copies are not dropped
+- Per-call AWS credentials are not projected into the Messages signing inputs
 
 # References
 

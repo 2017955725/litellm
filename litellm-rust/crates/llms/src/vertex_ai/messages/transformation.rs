@@ -3,10 +3,7 @@ use std::{
     sync::{Arc, LazyLock},
 };
 
-use litellm_auth::{
-    CredentialPlacement, CredentialPlanKind, CredentialRule, ExistingHeaderBehavior,
-    ProviderAuthPolicy, ResolvedCredential, SecretValue, TokenProviderHandle,
-};
+use litellm_auth::{CredentialPlacement, ResolvedCredential, SecretValue, TokenProviderHandle};
 use litellm_auth_gcp::{SECRET_NAMES, VertexAuth, VertexConfig};
 use litellm_core_utils::settings::resolve_non_empty;
 use litellm_llms_types::{
@@ -34,8 +31,8 @@ use crate::{
         auth::{AuthScheme, Headers, ValidatedEnvironment},
         messages::{
             context::{MessagesModelCapabilities, MessagesTransformContext},
-            normalization::fold_system_role_messages,
-            transformation::BaseMessagesConfig,
+            normalization::normalize_system_role_messages,
+            transformation::{BaseMessagesConfig, messages_request_body},
         },
     },
     vertex_ai::common_utils::{VERTEX_AI_API_KEY_ENV, VERTEXAI_API_KEY_ENV, VertexTarget},
@@ -46,17 +43,6 @@ const ANTHROPIC_VERSION_FIELD: &str = "anthropic_version";
 const EFFORT_FIELD: &str = "effort";
 const WEB_SEARCH_TOOL_PREFIX: &str = "web_search";
 const API_VERSIONS: [&str; 2] = ["v1", "v1beta1"];
-
-const VERTEX_AUTH_POLICY: ProviderAuthPolicy = ProviderAuthPolicy {
-    rules: &[CredentialRule {
-        kind: CredentialPlanKind::Static,
-        placement: CredentialPlacement::Bearer,
-    }],
-    accepted_existing_headers: &["authorization"],
-    existing_header_behavior: ExistingHeaderBehavior::Preserve,
-    scope: None,
-    audience: None,
-};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Endpoint {
@@ -119,7 +105,13 @@ impl BaseMessagesConfig for VertexAiMessagesConfig {
         context: &MessagesTransformContext,
     ) -> Result<MessagesRequest, Error> {
         let request = transform_messages_request_with(
-            fold_system_role_messages(request),
+            normalize_system_role_messages(
+                request,
+                context
+                    .thinking
+                    .capabilities
+                    .supports_mid_conversation_system,
+            ),
             context,
             PARTNER_HOST_REQUEST_POLICY,
         )?;
@@ -143,13 +135,22 @@ impl BaseMessagesConfig for VertexAiMessagesConfig {
         })
     }
 
+    fn request_body(&self, request: &MessagesRequest) -> Result<Value, Error> {
+        let Value::Object(fields) = messages_request_body(request)? else {
+            unreachable!("MessagesRequest serializes as an object")
+        };
+        Ok(Value::Object(
+            fields
+                .into_iter()
+                .filter(|(key, _)| key != "model")
+                .collect(),
+        ))
+    }
+
     fn secret_names(&self) -> &'static [&'static str] {
         SECRET_NAMES
     }
 
-    /// A forwarded `Authorization` is the caller's own Google token. Otherwise a static
-    /// token from `api_key` or the environment is the bearer, and without one a Google
-    /// access token is minted from the configured credentials when the request is sent.
     fn validate_environment(
         &self,
         headers: Headers,
@@ -157,12 +158,7 @@ impl BaseMessagesConfig for VertexAiMessagesConfig {
         _model: &str,
         env_lookup: &dyn Fn(&str) -> Option<String>,
     ) -> Result<ValidatedEnvironment, Error> {
-        if VERTEX_AUTH_POLICY.has_existing_credential(&headers) {
-            return Ok(ValidatedEnvironment {
-                headers,
-                auth: AuthScheme::Forwarded,
-            });
-        }
+        let headers = litellm_http::request::without_headers(headers, &["authorization"]);
         let auth = match resolve_non_empty(
             api_key,
             env_lookup,
@@ -539,11 +535,17 @@ mod tests {
     }
 
     #[rstest]
-    #[case::forwarded_google_token(
-        &[("Authorization", "Bearer caller-token")],
-        Some("static"),
+    #[case::stale_forwarded_token_does_not_shadow_explicit_token(
+        &[("Authorization", "Bearer expired")],
+        Some("fresh-static"),
         &[],
-        &[("Authorization", "Bearer caller-token")]
+        &[("authorization", "Bearer fresh-static")]
+    )]
+    #[case::stale_forwarded_token_does_not_skip_refresh(
+        &[("Authorization", "Bearer expired")],
+        None,
+        &[("VERTEXAI_CREDENTIALS", "refresh-fixture")],
+        &[("authorization", "Bearer minted-from-refresh-fixture")]
     )]
     #[case::api_key_is_a_static_bearer(&[], Some("static"), &[("VERTEX_AI_API_KEY", "env-key")], &[("authorization", "Bearer static")])]
     #[case::environment_static_token(&[], None, &[("VERTEXAI_API_KEY", "env-key")], &[("authorization", "Bearer env-key")])]
@@ -581,7 +583,7 @@ mod tests {
         );
     }
 
-    #[test]
+    #[rstest::rstest]
     fn the_body_carries_the_vertex_version_and_strips_cache_scope() {
         let body = transformed(
             json!({
@@ -607,14 +609,16 @@ mod tests {
         assert_eq!(
             body["system"],
             json!([
-                {"type": "text", "text": "sys", "cache_control": {"type": "ephemeral", "ttl": "1h"}},
-                {"type": "text", "text": "folded"}
+                {"type": "text", "text": "sys", "cache_control": {"type": "ephemeral", "ttl": "1h"}}
             ])
         );
         assert_eq!(
             body["messages"],
             json!([{"role": "user", "content": [
                 {"type": "text", "text": "hi", "cache_control": {"type": "ephemeral"}}
+            ]}, {"role":"user", "content":[
+                {"type":"text", "text":crate::base_llm::messages::normalization::CONVERTED_SYSTEM_NOTE},
+                {"type":"text", "text":"folded"}
             ]}])
         );
     }
@@ -643,6 +647,11 @@ mod tests {
         supports_output_config: true,
         supports_sampling_params: true,
         supports_speed: false,
+        supports_mid_conversation_system: false,
+        supports_cache_control_ttl: false,
+        supports_native_structured_output: false,
+        supports_tool_search: false,
+        effort_ceiling: None,
         effort_tiers: crate::base_llm::messages::context::SupportedEffortTiers {
             minimal: false,
             low: false,
@@ -796,5 +805,375 @@ mod tests {
             .filter(|name| !CONFIG.secret_names().contains(&name.as_str()))
             .collect();
         assert_eq!(undeclared, Vec::<&String>::new());
+    }
+    #[rstest]
+    #[case::supported_mid_conversation(true, false, true)]
+    #[case::supported_leading_run(true, true, true)]
+    #[case::unsupported_mid_conversation(false, false, false)]
+    #[case::unsupported_leading_run(false, true, false)]
+    fn test_messages_preserve_mid_conversation_system_by_capability(
+        #[case] supports_mid_conversation_system: bool,
+        #[case] leading_system: bool,
+        #[case] expected_system_role: bool,
+    ) {
+        use litellm_llms_types::formats::messages::{
+            ContentBlock, Message, MessageContent, MessageRole, MessagesOptionalParams,
+            SystemPrompt,
+        };
+        let message = |role, text: &str| Message {
+            role,
+            content: MessageContent::Text(text.into()),
+            extra: Default::default(),
+        };
+        let messages = leading_system
+            .then(|| {
+                [
+                    message(MessageRole::System, "leading"),
+                    message(MessageRole::System, "second leading"),
+                ]
+            })
+            .into_iter()
+            .flatten()
+            .chain([
+                message(MessageRole::User, "first"),
+                message(MessageRole::Assistant, "answer"),
+                message(MessageRole::System, "later"),
+                message(MessageRole::User, "last"),
+            ])
+            .collect();
+        let request = MessagesRequest {
+            model: "test-model".into(),
+            messages,
+            params: MessagesOptionalParams {
+                max_tokens: Some(4096),
+                ..Default::default()
+            },
+        };
+        let context = MessagesTransformContext::with_lookup(
+            MessagesModelCapabilities {
+                supports_mid_conversation_system,
+                ..Default::default()
+            },
+            false,
+            &|_: &str| None,
+        );
+        let result = VERTEX_AI_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &context)
+            .unwrap();
+        assert_eq!(result.messages.len(), 4);
+        assert_eq!(result.messages[0], message(MessageRole::User, "first"));
+        assert_eq!(
+            result.messages[1],
+            message(MessageRole::Assistant, "answer")
+        );
+        assert_eq!(result.messages[3], message(MessageRole::User, "last"));
+        assert_eq!(
+            result.messages[2].role,
+            if expected_system_role {
+                MessageRole::System
+            } else {
+                MessageRole::User
+            }
+        );
+        assert_eq!(
+            result.messages[2].content,
+            if expected_system_role {
+                MessageContent::Text("later".into())
+            } else {
+                MessageContent::Blocks(vec![
+                    ContentBlock::text(
+                        "Operator note (not from the user): the following was originally a mid-conversation system-role reminder.",
+                    ),
+                    ContentBlock::text("later"),
+                ])
+            }
+        );
+        assert_eq!(
+            result.params.system,
+            leading_system.then(|| SystemPrompt::Blocks(vec![
+                ContentBlock::text("leading"),
+                ContentBlock::text("second leading")
+            ]))
+        );
+    }
+
+    #[rstest]
+    #[case::nonstream(false)]
+    #[case::stream(true)]
+    fn vertex_wire_body_uses_the_url_model_and_preserves_stream(#[case] stream: bool) {
+        use litellm_llms_types::formats::messages::{Message, MessageContent, MessageRole};
+        let request = MessagesRequest {
+            model: "claude-model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("hello".into()),
+                extra: Default::default(),
+            }],
+            params: MessagesOptionalParams {
+                max_tokens: Some(16),
+                stream: Some(stream),
+                ..Default::default()
+            },
+        };
+        let result = VERTEX_AI_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        let body = VERTEX_AI_MESSAGES_CONFIG.request_body(&result).unwrap();
+        assert_eq!(
+            body,
+            json!({ "messages": [{"role": "user", "content": "hello"}], "max_tokens": 16, "stream": stream, "anthropic_version": VERTEX_ANTHROPIC_VERSION })
+        );
+        assert_eq!(result.model, "claude-model");
+    }
+    #[rstest]
+    #[case::caller_omits_beta(true, None)]
+    #[case::caller_sends_only_other_beta(true, Some("interleaved-thinking-2025-05-14"))]
+    #[case::caller_sends_beta(true, Some("dangerous-tool-use-2026-09-03"))]
+    #[case::caller_sends_mixed_betas(
+        true,
+        Some("dangerous-tool-use-2026-09-03,interleaved-thinking-2025-05-14")
+    )]
+    #[case::no_safeguards(false, None)]
+    fn test_messages_forwards_safeguards_with_one_dangerous_tool_use_beta(
+        #[case] enabled: bool,
+        #[case] beta_header: Option<&str>,
+    ) {
+        use litellm_llms_types::formats::messages::{
+            Message, MessageContent, MessageRole, Safeguard,
+        };
+        let safeguards = Recognized::Known(vec![Recognized::Known(Safeguard {
+            safeguard_type: "dangerous_tool_use".into(),
+            classifier_context: Some(Recognized::Known(
+                [
+                    ("v".into(), json!(1)),
+                    ("permission_mode".into(), json!("auto")),
+                ]
+                .into_iter()
+                .collect(),
+            )),
+            extra: Map::new(),
+        })]);
+        let request = MessagesRequest {
+            model: "test-model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("hello".into()),
+                extra: Map::new(),
+            }],
+            params: MessagesOptionalParams {
+                max_tokens: Some(64),
+                safeguards: enabled.then_some(safeguards.clone()),
+                ..Default::default()
+            },
+        };
+        let result = VERTEX_AI_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        assert_eq!(result.params.safeguards, enabled.then_some(safeguards));
+        let headers = beta_header
+            .map(|beta| ("anthropic-beta".into(), beta.into()))
+            .into_iter()
+            .collect();
+        let headers = VERTEX_AI_MESSAGES_CONFIG.request_headers(headers, &result);
+        let betas = crate::anthropic::common_utils::existing_betas(&headers);
+        assert_eq!(
+            betas
+                .iter()
+                .filter(|beta| beta.as_str() == "dangerous-tool-use-2026-09-03")
+                .count(),
+            usize::from(enabled)
+        );
+        let response: litellm_llms_types::formats::messages::MessagesResponse = serde_json::from_value(json!({
+            "id":"msg_1", "type":"message", "role":"assistant", "model":"model",
+            "content":[{"type":"text","text":"ok"}], "stop_reason":"end_turn", "stop_sequence":null,
+            "usage":{"input_tokens":1,"output_tokens":2},
+            "safeguard_results":[{"type":"dangerous_tool_use", "status":{"type":"available", "tool_uses":{"toolu_01":{"type":"evaluated", "outcome":"not_flagged"}}}}]
+        })).unwrap();
+        let actual = VERTEX_AI_MESSAGES_CONFIG
+            .transform_anthropic_messages_response("model", response.clone())
+            .unwrap();
+        assert_eq!(actual, response);
+    }
+    #[rstest]
+    #[case::adaptive_entry(true)]
+    #[case::entry_override_disables_adaptive(false)]
+    fn test_messages_thinking_shape_follows_injected_provider_entry_flag(#[case] adaptive: bool) {
+        use litellm_llms_types::formats::{
+            chat_completions::ReasoningEffort,
+            messages::{
+                EffortLevel, Message, MessageContent, MessageRole, OutputConfig, ThinkingConfig,
+                ThinkingDisplay,
+            },
+        };
+        let request = MessagesRequest {
+            model: "same-model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("hello".into()),
+                extra: Default::default(),
+            }],
+            params: MessagesOptionalParams {
+                max_tokens: Some(4096),
+                reasoning_effort: Some(Recognized::Known(ReasoningEffort::Medium)),
+                ..Default::default()
+            },
+        };
+        let context = MessagesTransformContext::with_lookup(
+            crate::base_llm::messages::context::MessagesModelCapabilities {
+                supports_adaptive_thinking: adaptive,
+                supports_output_config: adaptive,
+                supports_reasoning: true,
+                supports_legacy_thinking: true,
+                ..Default::default()
+            },
+            false,
+            &|_: &str| None,
+        );
+        let result = VERTEX_AI_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &context)
+            .unwrap();
+        assert_eq!(
+            result.params.thinking,
+            Some(Recognized::Known(if adaptive {
+                ThinkingConfig::adaptive(Some(ThinkingDisplay::Summarized))
+            } else {
+                ThinkingConfig::enabled(2048)
+            }))
+        );
+        assert_eq!(
+            result.params.output_config,
+            adaptive.then(|| Recognized::Known(OutputConfig {
+                effort: Some(Recognized::Known(EffortLevel::Medium)),
+                ..Default::default()
+            }))
+        );
+    }
+    #[rstest]
+    #[case::drop(true)]
+    #[case::reject(false)]
+    fn test_vertex_fast_mode_follows_drop_params(#[case] drop_params: bool) {
+        use litellm_llms_types::formats::messages::{Message, MessageContent, MessageRole, Speed};
+        let request = MessagesRequest {
+            model: "test-model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("Hello".into()),
+                extra: Map::new(),
+            }],
+            params: MessagesOptionalParams {
+                max_tokens: Some(1024),
+                speed: Some(Recognized::Known(Speed::Fast)),
+                ..Default::default()
+            },
+        };
+        let context = MessagesTransformContext::with_lookup(
+            MessagesModelCapabilities::default(),
+            drop_params,
+            &|_: &str| None,
+        );
+        let result =
+            VERTEX_AI_MESSAGES_CONFIG.transform_anthropic_messages_request(request, &context);
+        if drop_params {
+            assert!(result.unwrap().params.speed.is_none());
+        } else {
+            assert!(matches!(result, Err(Error::InvalidRequest(_))));
+        }
+    }
+    #[rstest]
+    #[case::no_edits(vec![], None)]
+    #[case::compact(vec![litellm_llms_types::formats::messages::ContextEdit::Compact { trigger: None, extra: Map::new() }], Some("compact-2026-01-12"))]
+    #[case::clear_tools(vec![litellm_llms_types::formats::messages::ContextEdit::ClearToolUses { extra: Map::new() }], Some("context-management-2025-06-27"))]
+    #[case::both(vec![litellm_llms_types::formats::messages::ContextEdit::Compact { trigger: None, extra: Map::new() }, litellm_llms_types::formats::messages::ContextEdit::ClearToolUses { extra: Map::new() }], Some("compact-2026-01-12,context-management-2025-06-27"))]
+    fn test_vertex_context_edits_add_exact_feature_headers(
+        #[case] edits: Vec<litellm_llms_types::formats::messages::ContextEdit>,
+        #[case] expected: Option<&str>,
+    ) {
+        use litellm_llms_types::formats::messages::{
+            ContextManagement, Message, MessageContent, MessageRole,
+        };
+        let request = MessagesRequest {
+            model: "model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("hello".into()),
+                extra: Map::new(),
+            }],
+            params: MessagesOptionalParams {
+                max_tokens: Some(16),
+                context_management: Some(Recognized::Known(ContextManagement {
+                    edits: Some(edits.into_iter().map(Recognized::Known).collect()),
+                    extra: Map::new(),
+                })),
+                ..Default::default()
+            },
+        };
+        let actual = CONFIG.request_headers(vec![], &request);
+        let expected: Headers = expected
+            .map(|beta| ("anthropic-beta".into(), beta.into()))
+            .into_iter()
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    #[rstest]
+    #[case::absent(None)]
+    #[case::empty(Some(OutputConfig::default()))]
+    #[case::effort(Some(OutputConfig { effort: Some(Recognized::Known(litellm_llms_types::formats::messages::EffortLevel::Low)), ..Default::default() }))]
+    fn test_vertex_system_output_config_adds_per_turn_header(
+        #[case] output_config: Option<OutputConfig>,
+    ) {
+        use litellm_llms_types::formats::messages::{
+            ContentBlock, Message, MessageContent, MessageRole,
+        };
+        let expected = output_config
+            .is_some()
+            .then(|| {
+                (
+                    "anthropic-beta".into(),
+                    "per-turn-control-2026-07-01".into(),
+                )
+            })
+            .into_iter()
+            .collect::<Headers>();
+        let request = MessagesRequest {
+            model: "model".into(),
+            messages: vec![
+                Message {
+                    role: MessageRole::User,
+                    content: MessageContent::Text("hello".into()),
+                    extra: Map::new(),
+                },
+                Message {
+                    role: MessageRole::System,
+                    content: MessageContent::Blocks(vec![ContentBlock::text("environment")]),
+                    extra: output_config
+                        .map(|config| {
+                            (
+                                "output_config".into(),
+                                serde_json::to_value(config).unwrap(),
+                            )
+                        })
+                        .into_iter()
+                        .collect(),
+                },
+            ],
+            params: MessagesOptionalParams {
+                max_tokens: Some(16),
+                ..Default::default()
+            },
+        };
+        let context = MessagesTransformContext::with_lookup(
+            MessagesModelCapabilities {
+                supports_mid_conversation_system: true,
+                ..Default::default()
+            },
+            false,
+            &|_: &str| None,
+        );
+        let transformed = CONFIG
+            .transform_anthropic_messages_request(request.clone(), &context)
+            .unwrap();
+        assert_eq!(transformed.messages, request.messages);
+        assert_eq!(CONFIG.request_headers(vec![], &transformed), expected);
     }
 }

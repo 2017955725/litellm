@@ -7,6 +7,17 @@ use crate::{Error, base_llm::messages::streaming::StreamDecoder};
 pub const MESSAGES_PATH_SUFFIX: &str = "/v1/messages";
 const VERSION_PATH_SUFFIX: &str = "/v1";
 
+pub struct MessagesWireRequest {
+    pub body: serde_json::Value,
+    pub headers: Headers,
+}
+
+pub(crate) fn messages_request_body(request: &MessagesRequest) -> Result<serde_json::Value, Error> {
+    serde_json::to_value(request).map_err(|error| {
+        Error::InvalidRequest(crate::ErrorDetail::invalid("Messages request body", error))
+    })
+}
+
 /// The Messages endpoint under an Anthropic-compatible base. A base already ending in
 /// `/v1/messages` is used as is, and one trailing `/v1` is dropped before the suffix goes on,
 /// so the same base serves a provider's OpenAI-compatible routes too.
@@ -60,6 +71,21 @@ pub trait BaseMessagesConfig: Sync {
         response: MessagesResponse,
     ) -> Result<MessagesResponse, Error> {
         Ok(response)
+    }
+
+    fn request_body(&self, request: &MessagesRequest) -> Result<serde_json::Value, Error> {
+        messages_request_body(request)
+    }
+
+    fn prepare_wire_request(
+        &self,
+        request: &MessagesRequest,
+        headers: Headers,
+    ) -> Result<MessagesWireRequest, Error> {
+        Ok(MessagesWireRequest {
+            body: self.request_body(request)?,
+            headers,
+        })
     }
 
     fn secret_names(&self) -> &'static [&'static str];

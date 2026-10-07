@@ -24,7 +24,6 @@ This directory owns Anthropic's implementation of the Messages adapter contract 
 
 # Known gaps
 
-- The `thinking-display-updates-2026-08-18` and `mid-conversation-tool-changes-2026-07-01` betas are never added, while Python's `common_utils.py` adds both
 - Workload identity federation (Python `litellm/llms/anthropic/wif.py`) is not a credential source
 
 # References

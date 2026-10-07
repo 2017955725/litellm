@@ -72,6 +72,7 @@ def test_capabilities_come_from_the_model_map_under_the_callers_provider(monkeyp
         supports_output_config=True,
         supports_xhigh_reasoning_effort=True,
         supports_sampling_params=False,
+        supports_mid_conversation_system=True,
     )
 
     capabilities: Final = route_host.model_capabilities("anthropic/claude-test-adaptive", None)
@@ -82,6 +83,109 @@ def test_capabilities_come_from_the_model_map_under_the_callers_provider(monkeyp
     assert not capabilities.supports_sampling_params
     assert capabilities.effort_tiers.xhigh
     assert not capabilities.effort_tiers.max
+    assert capabilities.supports_mid_conversation_system
+
+
+def test_bedrock_projection_carries_provider_specific_capabilities(monkeypatch: pytest.MonkeyPatch) -> None:
+    model: Final = "anthropic.claude-test-projection"
+    monkeypatch.setitem(
+        litellm.model_cost,
+        model,
+        {
+            "litellm_provider": "bedrock",
+            "mode": "chat",
+            "supports_native_structured_output": True,
+            "supports_tool_search": True,
+            "bedrock_output_config_effort_ceiling": "high",
+        },
+    )
+    projected: Final = route_host.shaping(model, "bedrock", {})["capabilities"]
+    assert projected["supports_native_structured_output"] is True
+    assert projected["supports_tool_search"] is True
+    assert projected["effort_ceiling"] == "high"
+
+    other_provider: Final = route_host.shaping(model, "anthropic", {})["capabilities"]
+    assert other_provider["supports_native_structured_output"] is False
+    assert other_provider["supports_tool_search"] is False
+    assert other_provider["effort_ceiling"] is None
+
+
+@pytest.mark.parametrize("metadata_key", ["metadata", "litellm_metadata"])
+def test_bedrock_metadata_projection_validates_text_without_resolving_policy(
+    metadata_key: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", ["user_api_key_alias", "spend_logs_metadata"])
+    projected: Final = route_host.shaping(
+        "bedrock/anthropic.claude-test",
+        "bedrock",
+        {
+            metadata_key: {
+                "user_api_key_alias": "prod-key",
+                "user_api_key_spend": 1.25,
+                123: "ignored",
+                "spend_logs_metadata": {"cost_center": "cc-1", "invalid": 4, 456: "ignored"},
+            }
+        },
+    )["bedrock_request_metadata"]
+    assert projected == {
+        "allowed_fields": ("user_api_key_alias", "spend_logs_metadata"),
+        "sources": tuple(
+            {
+                "identity": (("user_api_key_alias", "prod-key"),) if name == metadata_key else (),
+                "spend_logs": (("cost_center", "cc-1"),) if name == metadata_key else (),
+            }
+            for name in ("metadata", "litellm_metadata")
+        ),
+    }
+
+
+@pytest.mark.parametrize("setting", [None, []])
+def test_disabled_bedrock_metadata_projection_omits_identity(
+    setting: list[str] | None, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", setting)
+    assert (
+        route_host.shaping("bedrock/anthropic.claude-test", "bedrock", {"metadata": {"user_api_key_alias": "secret"}})[
+            "bedrock_request_metadata"
+        ]
+        is None
+    )
+
+
+def test_bedrock_metadata_is_not_projected_for_another_provider(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(litellm, "bedrock_request_metadata_fields", ["user_api_key_alias"])
+    assert (
+        route_host.shaping("claude-test", "anthropic", {"metadata": {"user_api_key_alias": "secret"}})[
+            "bedrock_request_metadata"
+        ]
+        is None
+    )
+
+
+def test_bedrock_connection_projection_preserves_typed_per_call_inputs() -> None:
+    projected: Final = route_host.shaping(
+        "bedrock/anthropic.claude-test",
+        "bedrock",
+        {
+            "aws_bedrock_runtime_endpoint": "https://runtime.test",
+            "aws_region_name": "us-east-2",
+            "model_id": "override/model",
+            "aws_bedrock_project_id": "project-test",
+        },
+    )["bedrock_connection"]
+    assert projected == {
+        "api_base": "https://runtime.test",
+        "region": "us-east-2",
+        "model_id": "override/model",
+        "workspace_id": "project-test",
+    }
+
+
+def test_bedrock_connection_projection_drops_non_text_inputs() -> None:
+    projected: Final = route_host.shaping(
+        "bedrock/anthropic.claude-test", "bedrock", {"aws_region_name": 3, "model_id": {"unexpected": "value"}}
+    )["bedrock_connection"]
+    assert projected == {"api_base": None, "region": None, "model_id": None, "workspace_id": None}
 
 
 def test_unmapped_model_keeps_sampling_params_and_no_reasoning_features() -> None:

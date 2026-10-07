@@ -473,4 +473,71 @@ mod tests {
             .collect();
         assert_eq!(undeclared, Vec::<&String>::new());
     }
+    #[rstest]
+    #[case::adaptive(litellm_llms_types::formats::messages::ThinkingConfig::adaptive(None))]
+    #[case::disabled(litellm_llms_types::formats::messages::ThinkingConfig::Disabled(
+        Default::default()
+    ))]
+    #[case::enabled(litellm_llms_types::formats::messages::ThinkingConfig::enabled(2048))]
+    fn test_native_thinking_effort_and_sampling_do_not_depend_on_model_registration(
+        #[case] thinking: litellm_llms_types::formats::messages::ThinkingConfig,
+    ) {
+        use litellm_llms_types::formats::messages::{
+            EffortLevel, Message, MessageContent, MessageRole, MessagesOptionalParams, OutputConfig,
+        };
+        use litellm_llms_types::recognized::Recognized;
+        let params = MessagesOptionalParams {
+            max_tokens: Some(4096),
+            thinking: Some(Recognized::Known(thinking)),
+            output_config: Some(Recognized::Known(OutputConfig {
+                effort: Some(Recognized::Known(EffortLevel::High)),
+                ..Default::default()
+            })),
+            temperature: Some(0.7),
+            ..Default::default()
+        };
+        let request = MessagesRequest {
+            model: "unregistered-native-model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("hello".into()),
+                extra: Default::default(),
+            }],
+            params: params.clone(),
+        };
+        let result = TENCENT_MESSAGES_CONFIG
+            .transform_anthropic_messages_request(request, &MessagesTransformContext::default())
+            .unwrap();
+        assert_eq!(result.params.thinking, params.thinking);
+        assert_eq!(result.params.output_config, params.output_config);
+        assert_eq!(result.params.temperature, params.temperature);
+    }
+
+    #[rstest]
+    #[case::anthropic_key(&[("ANTHROPIC_API_KEY", "unrelated-value")])]
+    #[case::workload_identity(&[("ANTHROPIC_FEDERATION_RULE_ID", "unrelated-value")])]
+    #[case::organization(&[("ANTHROPIC_ORGANIZATION_ID", "unrelated-value")])]
+    #[case::full_workload_identity(&[
+        ("ANTHROPIC_FEDERATION_RULE_ID", "fdrl_prod"),
+        ("ANTHROPIC_ORGANIZATION_ID", "org-prod-uuid"),
+        ("ANTHROPIC_IDENTITY_TOKEN_FILE", "/unread/identity-token"),
+    ])]
+    fn test_non_anthropic_provider_fails_closed_without_its_own_key(
+        #[case] unrelated_secrets: &[(&str, &str)],
+    ) {
+        let lookup = |name: &str| {
+            unrelated_secrets
+                .iter()
+                .find_map(|(key, value)| (*key == name).then(|| (*value).into()))
+        };
+        let result =
+            TENCENT_MESSAGES_CONFIG.validate_environment(Vec::new(), None, "native-model", &lookup);
+        assert_eq!(
+            result.unwrap_err(),
+            Error::Auth(litellm_auth::Error::MissingApiKey {
+                provider: "Tencent",
+                environment_variable: TENCENT_API_KEY_ENV,
+            })
+        );
+    }
 }

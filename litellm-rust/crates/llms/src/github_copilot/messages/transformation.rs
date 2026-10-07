@@ -436,4 +436,52 @@ mod tests {
             .collect();
         assert_eq!(undeclared, Vec::<String>::new());
     }
+    #[rstest]
+    #[case::structured_output(Some(serde_json::json!({"type": "json_object"})), None, "structured-outputs-2025-11-13")]
+    #[case::context_management(None, Some(litellm_llms_types::formats::messages::ContextManagement {
+        edits: Some(vec![litellm_llms_types::recognized::Recognized::Known(litellm_llms_types::formats::messages::ContextEdit::ClearToolUses { extra: Default::default() })]),
+        ..Default::default()
+    }), "context-management-2025-06-27")]
+    fn native_feature_betas_keep_messages_proxy_routing(
+        #[case] output_format: Option<serde_json::Value>,
+        #[case] context_management: Option<
+            litellm_llms_types::formats::messages::ContextManagement,
+        >,
+        #[case] expected_beta: &str,
+    ) {
+        use litellm_llms_types::{
+            formats::messages::{Message, MessageContent, MessageRole, MessagesOptionalParams},
+            recognized::Recognized,
+        };
+        let request = MessagesRequest {
+            model: "native-claude-model".into(),
+            messages: vec![Message {
+                role: MessageRole::User,
+                content: MessageContent::Text("Hello".into()),
+                extra: Default::default(),
+            }],
+            params: MessagesOptionalParams {
+                max_tokens: Some(16),
+                output_format: output_format.map(Recognized::Unrecognized),
+                context_management: context_management.map(Recognized::Known),
+                ..Default::default()
+            },
+        };
+        let config = fresh_config();
+        let sent = config.request_headers(validated(&config, &[]).headers, &request);
+        for (name, expected) in [
+            ("openai-intent", "messages-proxy"),
+            ("x-interaction-type", "messages-proxy"),
+            ("x-github-api-version", "2026-06-01"),
+            ("anthropic-beta", expected_beta),
+        ] {
+            assert_eq!(
+                sent.iter()
+                    .filter(|(key, _)| key.eq_ignore_ascii_case(name))
+                    .map(|(_, value)| value.as_str())
+                    .collect::<Vec<_>>(),
+                vec![expected]
+            );
+        }
+    }
 }

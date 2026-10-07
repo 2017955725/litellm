@@ -274,6 +274,8 @@ pub enum ContentBlockType {
     Thinking,
     RedactedThinking,
     ToolUse,
+    ToolAddition,
+    ToolRemoval,
     ServerToolUse,
     ToolResult,
     Compaction,
@@ -313,6 +315,8 @@ pub struct ContentBlock {
 #[macro_rules_attribute::apply(wire_type)]
 #[derive(Default)]
 pub struct ContentBlockPayload {
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub tool: Option<Recognized<Box<ContentBlock>>>,
     #[serde(default, deserialize_with = "deserialize_present")]
     pub text: Option<Nullable<String>>,
     #[serde(default, deserialize_with = "deserialize_present")]
@@ -436,4 +440,142 @@ pub struct CacheControl {
     pub scope: Option<Nullable<String>>,
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+    use serde_json::json;
+
+    use super::*;
+
+    #[rstest]
+    #[case::tool_addition("tool_addition", ContentBlockType::ToolAddition)]
+    #[case::tool_removal("tool_removal", ContentBlockType::ToolRemoval)]
+    #[case::unknown("future_change", ContentBlockType::Other("future_change".into()))]
+    #[case::case_sensitive("Tool_Addition", ContentBlockType::Other("Tool_Addition".into()))]
+    #[case::empty("", ContentBlockType::Other(String::new()))]
+    fn native_messages_tool_changes_discriminator(
+        #[case] wire: &str,
+        #[case] expected: ContentBlockType,
+    ) {
+        assert_eq!(
+            serde_json::from_value::<ContentBlockType>(json!(wire)).unwrap(),
+            expected
+        );
+        assert_eq!(serde_json::to_value(&expected).unwrap(), json!(wire));
+        let tool = json!({"type":"tool_reference","name":"mcp__test__ping","input":{"type":"tool_removal","signature":null}});
+        let block = ContentBlock {
+            block_type: Some(Nullable::Value(expected)),
+            payload: ContentBlockPayload {
+                tool: Some(Recognized::Known(Box::new(ContentBlock {
+                    block_type: Some(Nullable::Value(ContentBlockType::ToolReference)),
+                    payload: ContentBlockPayload {
+                        name: Some(Nullable::Value("mcp__test__ping".into())),
+                        input: Some(Recognized::Known(Map::from_iter([
+                            ("type".into(), json!("tool_removal")),
+                            ("signature".into(), Value::Null),
+                        ]))),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }))),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(
+            serde_json::to_value(&block).unwrap(),
+            json!({"type":wire,"tool":tool})
+        );
+        assert_eq!(
+            serde_json::from_value::<ContentBlock>(json!({"type":wire,"tool":tool})).unwrap(),
+            block
+        );
+    }
+
+    #[rstest]
+    #[case::signed_thinking(ContentBlockType::Thinking, Some(Nullable::Value("plan".into())), Some(Nullable::Value("EqQBCkYIAxgCIkA_anthropic_signed".into())), None, json!({"type":"thinking","thinking":"plan","signature":"EqQBCkYIAxgCIkA_anthropic_signed"}))]
+    #[case::redacted_thinking(ContentBlockType::RedactedThinking, None, None, Some(Nullable::Value("EmwKAhgBEgy_anthropic_minted".into())), json!({"type":"redacted_thinking","data":"EmwKAhgBEgy_anthropic_minted"}))]
+    #[case::null_signature(ContentBlockType::Thinking, Some(Nullable::Value("let me think".into())), Some(Nullable::Null), None, json!({"type":"thinking","thinking":"let me think","signature":null}))]
+    #[case::missing_signature(ContentBlockType::Thinking, Some(Nullable::Value("let me think".into())), None, None, json!({"type":"thinking","thinking":"let me think"}))]
+    fn anthropic_signed_thinking_payload_is_preserved(
+        #[case] block_type: ContentBlockType,
+        #[case] thinking: Option<Nullable<String>>,
+        #[case] signature: Option<Nullable<String>>,
+        #[case] data: Option<Nullable<String>>,
+        #[case] wire: Value,
+    ) {
+        let block = ContentBlock {
+            block_type: Some(Nullable::Value(block_type)),
+            payload: ContentBlockPayload {
+                thinking,
+                signature,
+                data,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(serde_json::to_value(&block).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<ContentBlock>(wire).unwrap(), block);
+    }
+
+    #[rstest]
+    fn tool_input_and_provider_fields_remain_opaque() {
+        let input = Map::from_iter([
+            ("cache_control".into(), json!({"ttl":"1h","scope":null})),
+            (
+                "content".into(),
+                json!([{"type":"thinking","signature":"encrypted","provider_specific_fields":{"type":null}}]),
+            ),
+        ]);
+        let provider_fields = Map::from_iter([("signature".into(), json!({"nested":[null,true]}))]);
+        let block = ContentBlock {
+            block_type: Some(Nullable::Value(ContentBlockType::ToolUse)),
+            payload: ContentBlockPayload {
+                id: Some(Nullable::Value("toolu_1".into())),
+                name: Some(Nullable::Value("lookup".into())),
+                input: Some(Recognized::Known(input.clone())),
+                provider_specific_fields: Some(Recognized::Known(provider_fields.clone())),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let wire = json!({"type":"tool_use","id":"toolu_1","name":"lookup","input":input,"provider_specific_fields":provider_fields});
+        assert_eq!(serde_json::to_value(&block).unwrap(), wire);
+        assert_eq!(serde_json::from_value::<ContentBlock>(wire).unwrap(), block);
+    }
+
+    #[rstest]
+    #[case::null(json!(null))]
+    #[case::scalar(json!(17))]
+    #[case::malformed_type(json!({"type":false,"name":"lookup"}))]
+    #[case::malformed_name(json!({"type":"tool_reference","name":17}))]
+    fn tool_changes_preserve_unrecognized_tool_payloads(#[case] tool: Value) {
+        let wire = json!({"type":"tool_addition","tool":tool});
+        let block: ContentBlock = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(block.tool, Some(Recognized::Unrecognized(tool)));
+        let stream_block: crate::formats::messages::streaming::MessagesContentBlock =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(stream_block.payload, block.payload);
+        assert_eq!(serde_json::to_value(stream_block).unwrap(), wire);
+        assert_eq!(serde_json::to_value(block).unwrap(), wire);
+    }
+
+    #[rstest]
+    fn tool_changes_preserve_unknown_nested_discriminators() {
+        let wire = json!({"type":"tool_removal","tool":{"type":"future_reference","future":{"nested":[null,true]}}});
+        let block: ContentBlock = serde_json::from_value(wire.clone()).unwrap();
+        let tool = block.tool.as_ref().and_then(Recognized::known).unwrap();
+        assert!(tool.is_type(ContentBlockType::Other("future_reference".into())));
+        assert_eq!(
+            tool.extra.get("future"),
+            Some(&json!({"nested":[null,true]}))
+        );
+        let stream_block: crate::formats::messages::streaming::MessagesContentBlock =
+            serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(stream_block.payload, block.payload);
+        assert_eq!(serde_json::to_value(stream_block).unwrap(), wire);
+        assert_eq!(serde_json::to_value(block).unwrap(), wire);
+    }
 }
