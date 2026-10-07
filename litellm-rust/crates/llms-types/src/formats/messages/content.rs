@@ -302,6 +302,18 @@ pub struct ContentBlock {
     #[serde(rename = "type", default, deserialize_with = "deserialize_present")]
     pub block_type: Option<Nullable<ContentBlockType>>,
     #[serde(default, deserialize_with = "deserialize_present")]
+    pub tool_use_id: Option<Nullable<String>>,
+    #[serde(default, deserialize_with = "deserialize_present")]
+    pub cache_control: Option<Nullable<CacheControl>>,
+    #[serde(flatten)]
+    pub payload: ContentBlockPayload,
+}
+
+#[serde_with::skip_serializing_none]
+#[macro_rules_attribute::apply(wire_type)]
+#[derive(Default)]
+pub struct ContentBlockPayload {
+    #[serde(default, deserialize_with = "deserialize_present")]
     pub text: Option<Nullable<String>>,
     #[serde(default, deserialize_with = "deserialize_present")]
     pub thinking: Option<Nullable<String>>,
@@ -314,15 +326,11 @@ pub struct ContentBlock {
     #[serde(default, deserialize_with = "deserialize_present")]
     pub name: Option<Nullable<String>>,
     #[serde(default, deserialize_with = "deserialize_present")]
-    pub tool_use_id: Option<Nullable<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
     pub input: Option<Recognized<Map<String, Value>>>,
     #[serde(default, deserialize_with = "deserialize_present")]
     pub content: Option<Recognized<BlockContent>>,
     #[serde(default, deserialize_with = "deserialize_present")]
     pub provider_specific_fields: Option<Recognized<Map<String, Value>>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub cache_control: Option<Nullable<CacheControl>>,
     #[serde(default, deserialize_with = "deserialize_present")]
     pub source: Option<Recognized<ContentSource>>,
     #[serde(default, deserialize_with = "deserialize_present")]
@@ -391,11 +399,22 @@ pub struct ContentBlock {
     pub extra: Map<String, Value>,
 }
 
+impl std::ops::Deref for ContentBlock {
+    type Target = ContentBlockPayload;
+
+    fn deref(&self) -> &Self::Target {
+        &self.payload
+    }
+}
+
 impl ContentBlock {
     pub fn text(text: impl Into<String>) -> Self {
         Self {
             block_type: Some(Nullable::Value(ContentBlockType::Text)),
-            text: Some(Nullable::Value(text.into())),
+            payload: ContentBlockPayload {
+                text: Some(Nullable::Value(text.into())),
+                ..ContentBlockPayload::default()
+            },
             ..Self::default()
         }
     }

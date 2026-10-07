@@ -6,8 +6,8 @@ use litellm_http::request::{
 };
 use litellm_llms_types::{
     formats::messages::{
-        BlockContent, BuiltinMessagesTool, ContentBlock, ContentBlockType, EffortLevel, Message,
-        MessageContent, MessagesCompaction, MessagesTool,
+        BlockContent, BuiltinMessagesTool, ContentBlock, ContentBlockPayload, ContentBlockType,
+        EffortLevel, Message, MessageContent, MessagesCompaction, MessagesTool,
     },
     providers::anthropic::{AnthropicBeta, BetaSet},
     recognized::Recognized,
@@ -339,7 +339,10 @@ fn sanitize_tool_use_id_block(block: ContentBlock) -> ContentBlock {
         Some(ContentBlockType::ToolUse | ContentBlockType::ServerToolUse) => {
             match normalized_if_changed(block.id.as_ref().and_then(Nullable::as_deref)) {
                 Some(id) => ContentBlock {
-                    id: Some(Nullable::Value(id)),
+                    payload: ContentBlockPayload {
+                        id: Some(Nullable::Value(id)),
+                        ..block.payload
+                    },
                     ..block
                 },
                 None => block,
@@ -382,7 +385,10 @@ pub fn strip_provider_specific_fields(messages: Vec<Message>) -> Vec<Message> {
                     blocks
                         .into_iter()
                         .map(|block| ContentBlock {
-                            provider_specific_fields: None,
+                            payload: ContentBlockPayload {
+                                provider_specific_fields: None,
+                                ..block.payload
+                            },
                             ..block
                         })
                         .collect(),

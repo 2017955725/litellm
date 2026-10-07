@@ -7,17 +7,17 @@ mod tools;
 mod usage;
 
 pub use request::{
-    AdaptiveThinking, BuiltinMessagesTool, ContextEdit, ContextManagement, CustomTool,
-    DisabledThinking, EffortLevel, EnabledThinking, Message, MessagesOptionalParams,
+    AdaptiveThinking, BuiltinMessagesTool, ContextEdit, ContextManagement, ContextTrigger,
+    CustomTool, DisabledThinking, EffortLevel, EnabledThinking, Message, MessagesOptionalParams,
     MessagesRequest, MessagesTool, OutputConfig, Speed, ThinkingConfig, ThinkingDisplay,
 };
 pub use response::MessagesResponse;
 
 pub use content::{
     BlockContent, CacheControl, CharCitation, Citation, Citations, CitationsConfig, ContentBlock,
-    ContentBlockCitation, ContentBlockType, ContentSource, MessageContent, PageCitation,
-    PromptCacheBreakpoint, PromptCacheMode, SearchResultCitation, SystemPrompt, ToolCaller,
-    WebSearchCitation, WebSearchResultError, WebSearchResultErrorType,
+    ContentBlockCitation, ContentBlockPayload, ContentBlockType, ContentSource, MessageContent,
+    PageCitation, PromptCacheBreakpoint, PromptCacheMode, SearchResultCitation, SystemPrompt,
+    ToolCaller, WebSearchCitation, WebSearchResultError, WebSearchResultErrorType,
 };
 pub use metadata::{
     AppliedEdit, CompactionType, ContainerReference, ContainerSkill, ContextManagementResponse,

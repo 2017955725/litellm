@@ -69,94 +69,20 @@ pub enum MessagesContentBlockDelta {
 pub struct MessagesContentBlock {
     #[serde(rename = "type")]
     pub block_type: super::ContentBlockType,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub id: Option<Nullable<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub name: Option<Nullable<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub text: Option<Nullable<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub input: Option<Recognized<Map<String, Value>>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub thinking: Option<Nullable<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub signature: Option<Nullable<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub data: Option<Nullable<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub content: Option<Recognized<super::BlockContent>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub caller: Option<Recognized<super::ToolCaller>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub source: Option<Recognized<super::ContentSource>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub citations: Option<Recognized<super::Citations>>,
+    #[serde(flatten)]
+    pub payload: super::ContentBlockPayload,
     #[serde(default, deserialize_with = "deserialize_present")]
     pub tool_use_id: Option<Recognized<String>>,
     #[serde(default, deserialize_with = "deserialize_present")]
-    pub is_error: Option<Recognized<bool>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
     pub cache_control: Option<Recognized<super::CacheControl>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub file_id: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub title: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub context: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub url: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub page_age: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub encrypted_content: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub snippet: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub tool_name: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub provider_specific_fields: Option<Recognized<Map<String, Value>>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub prompt_cache_breakpoint: Option<Recognized<super::PromptCacheBreakpoint>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub stdout: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub stderr: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub return_code: Option<Recognized<i64>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub encrypted_stdout: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub error_code: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub error_message: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub retrieved_at: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub server_name: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub tool_references: Option<Recognized<Vec<Recognized<super::ContentBlock>>>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub file_type: Option<Recognized<String>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub num_lines: Option<Recognized<u64>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub start_line: Option<Recognized<u64>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub total_lines: Option<Recognized<u64>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub is_file_update: Option<Recognized<bool>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub lines: Option<Recognized<Vec<String>>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub new_lines: Option<Recognized<u64>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub new_start: Option<Recognized<u64>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub old_lines: Option<Recognized<u64>>,
-    #[serde(default, deserialize_with = "deserialize_present")]
-    pub old_start: Option<Recognized<u64>>,
-    #[serde(flatten)]
-    pub extra: Map<String, Value>,
+}
+
+impl std::ops::Deref for MessagesContentBlock {
+    type Target = super::ContentBlockPayload;
+
+    fn deref(&self) -> &Self::Target {
+        &self.payload
+    }
 }
 
 #[macro_rules_attribute::apply(wire_type)]

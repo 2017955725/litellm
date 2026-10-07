@@ -10,9 +10,7 @@ use litellm_auth::{
 use litellm_auth_gcp::{SECRET_NAMES, VertexAuth, VertexConfig};
 use litellm_core_utils::settings::resolve_non_empty;
 use litellm_llms_types::{
-    formats::messages::{
-        BuiltinMessagesTool, MessagesOptionalParams, MessagesRequest, MessagesTool, OutputConfig,
-    },
+    formats::messages::{MessagesOptionalParams, MessagesRequest, MessagesTool, OutputConfig},
     providers::anthropic::{AnthropicBeta, BetaProvider, BetaSet},
     recognized::Recognized,
 };
@@ -306,9 +304,7 @@ fn vertex_feature_betas(params: &MessagesOptionalParams) -> BetaSet {
 
 fn uses_web_search(tools: Option<&[Recognized<MessagesTool>]>) -> bool {
     tools.into_iter().flatten().any(|tool| match tool {
-        Recognized::Known(MessagesTool::Builtin(
-            BuiltinMessagesTool::WebSearch(_) | BuiltinMessagesTool::WebSearch20260209(_),
-        )) => true,
+        Recognized::Known(MessagesTool::Builtin(tool)) => tool.is_web_search(),
         Recognized::Known(_) => false,
         Recognized::Unrecognized(tool) => tool
             .get("type")
@@ -328,9 +324,7 @@ fn sanitize_output_config(
                 effort: config.effort.filter(|_| keeps_effort),
                 ..config
             };
-            let is_empty =
-                config.effort.is_none() && config.format.is_none() && config.extra.is_empty();
-            (!is_empty).then_some(Recognized::Known(config))
+            (!config.is_empty()).then_some(Recognized::Known(config))
         }
         Recognized::Unrecognized(Value::Object(fields)) => {
             let fields: Map<String, Value> = fields
@@ -743,6 +737,14 @@ mod tests {
         json!({"tools": [{"type": "web_search_20250305", "name": "web_search"}]}),
         AnthropicBeta::WebSearch20250305
     )]
+    #[case::web_search_20260209(
+        json!({"tools": [{"type": "web_search_20260209", "name": "web_search"}]}),
+        AnthropicBeta::WebSearch20250305
+    )]
+    #[case::web_search_20260318(
+        json!({"tools": [{"type": "web_search_20260318", "name": "web_search"}]}),
+        AnthropicBeta::WebSearch20250305
+    )]
     #[case::future_web_search_tool(
         json!({"tools": [{"type": "web_search_20991231", "name": "web_search"}]}),
         AnthropicBeta::WebSearch20250305
@@ -753,6 +755,15 @@ mod tests {
     )]
     fn vertex_specific_features_add_their_beta(#[case] fields: Value, #[case] beta: AnthropicBeta) {
         assert_eq!(beta_header_for(fields, &[]), Some(vertex_name(beta)));
+    }
+
+    #[rstest]
+    #[case::web_fetch(json!({"tools": [{"type": "web_fetch_20260318", "name": "web_search"}]}))]
+    #[case::custom_tool(json!({"tools": [{"name": "web_search", "input_schema": {"type": "object"}}]}))]
+    #[case::explicit_custom_tool(json!({"tools": [{"type": "custom", "name": "web_search"}]}))]
+    #[case::case_sensitive(json!({"tools": [{"type": "Web_Search_20991231"}]}))]
+    fn unrelated_tools_do_not_add_the_web_search_beta(#[case] fields: Value) {
+        assert_eq!(beta_header_for(fields, &[]), None);
     }
 
     #[test]

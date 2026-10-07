@@ -1,11 +1,14 @@
 use litellm_auth::CredentialPlacement;
 use litellm_llms_types::{
     formats::messages::{
-        ContextEdit, ContextManagement, Message, MessagesOptionalParams, MessagesRequest, Speed,
+        ContextEdit, ContextManagement, ContextTrigger, Message, MessagesOptionalParams,
+        MessagesRequest, Speed,
     },
     providers::anthropic::{AnthropicBeta, BetaSet},
     recognized::Recognized,
+    serde_compat::deserialize_present,
 };
+use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::{
@@ -372,24 +375,37 @@ fn speed_text(speed: &Recognized<Speed>) -> String {
     }
 }
 
-fn compact_edit_from_openai(entry: &Map<String, Value>) -> Option<ContextEdit> {
-    if entry.get("type").and_then(Value::as_str) != Some("compaction") {
-        return None;
-    }
-    let trigger = entry
-        .get("compact_threshold")
-        .and_then(Value::as_f64)
-        .map(|threshold| json!({"type": "input_tokens", "value": threshold as i64}));
-    let passthrough = entry
-        .iter()
-        .filter(|(key, _)| !matches!(key.as_str(), "type" | "compact_threshold"))
-        .map(|(key, value)| (key.clone(), value.clone()));
+#[derive(Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum OpenAiContextManagementEntry {
+    Compaction {
+        #[serde(default)]
+        compact_threshold: Option<Recognized<f64>>,
+        #[serde(default, deserialize_with = "deserialize_present")]
+        trigger: Option<Recognized<ContextTrigger>>,
+        #[serde(flatten)]
+        extra: Map<String, Value>,
+    },
+}
+
+fn compact_edit_from_openai(entry: &Value) -> Option<ContextEdit> {
+    let OpenAiContextManagementEntry::Compaction {
+        compact_threshold,
+        trigger,
+        extra,
+    } = OpenAiContextManagementEntry::deserialize(entry).ok()?;
+    let generated_trigger = match compact_threshold {
+        Some(Recognized::Known(threshold)) => {
+            Some(Recognized::Known(ContextTrigger::InputTokens {
+                value: Recognized::Known(threshold as i64),
+                extra: Map::new(),
+            }))
+        }
+        _ => None,
+    };
     Some(ContextEdit::Compact {
-        extra: trigger
-            .map(|trigger| ("trigger".to_string(), trigger))
-            .into_iter()
-            .chain(passthrough)
-            .collect(),
+        trigger: trigger.or(generated_trigger),
+        extra,
     })
 }
 
@@ -403,7 +419,6 @@ pub fn map_openai_context_management_to_anthropic(
     };
     let edits: Vec<Recognized<ContextEdit>> = entries
         .iter()
-        .filter_map(Value::as_object)
         .filter_map(compact_edit_from_openai)
         .map(Recognized::Known)
         .collect();
@@ -762,6 +777,30 @@ mod tests {
     #[case::non_numeric_threshold_is_dropped(
         json!([{"type": "compaction", "compact_threshold": "150000"}]),
         Some(json!({"edits": [{"type": "compact_20260112"}]}))
+    )]
+    #[case::negative_threshold_preserves_truncation(
+        json!([{"type": "compaction", "compact_threshold": -1000.9}]),
+        Some(json!({"edits": [{"type": "compact_20260112", "trigger": {"type": "input_tokens", "value": -1000}}]}))
+    )]
+    #[case::null_threshold_is_dropped(
+        json!([{"type": "compaction", "compact_threshold": null}]),
+        Some(json!({"edits": [{"type": "compact_20260112"}]}))
+    )]
+    #[case::caller_trigger_wins_over_threshold(
+        json!([{"type": "compaction", "compact_threshold": 200000, "trigger": {"type": "input_tokens", "value": 1000, "future": null}}]),
+        Some(json!({"edits": [{"type": "compact_20260112", "trigger": {"type": "input_tokens", "value": 1000, "future": null}}]}))
+    )]
+    #[case::null_trigger_wins_over_threshold(
+        json!([{"type": "compaction", "compact_threshold": 200000, "trigger": null}]),
+        Some(json!({"edits": [{"type": "compact_20260112", "trigger": null}]}))
+    )]
+    #[case::unknown_trigger_wins_over_threshold(
+        json!([{"type": "compaction", "compact_threshold": 200000, "trigger": {"type": "future", "value": [1, null]}}]),
+        Some(json!({"edits": [{"type": "compact_20260112", "trigger": {"type": "future", "value": [1, null]}}]}))
+    )]
+    #[case::scalar_trigger_wins_over_threshold(
+        json!([{"type": "compaction", "compact_threshold": 200000, "trigger": false}]),
+        Some(json!({"edits": [{"type": "compact_20260112", "trigger": false}]}))
     )]
     #[case::non_object_entries_are_skipped(
         json!([42, "compaction", null, [], {"type": "compaction", "compact_threshold": 1000}]),

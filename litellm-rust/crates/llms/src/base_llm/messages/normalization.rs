@@ -114,13 +114,11 @@ fn block_without_scope(block: ContentBlock) -> ContentBlock {
     }
 }
 
-fn blocks_without_scope(blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
-    blocks.into_iter().map(block_without_scope).collect()
-}
-
-/// Removes `cache_control.scope`, which hosts other than the first-party API reject, from
-/// the top-level `cache_control` and every `system` and message block.
-pub fn strip_cache_control_scope(request: MessagesRequest) -> MessagesRequest {
+pub(crate) fn map_request_blocks(
+    request: MessagesRequest,
+    system_block: fn(ContentBlock) -> ContentBlock,
+    message_block: fn(ContentBlock) -> ContentBlock,
+) -> MessagesRequest {
     MessagesRequest {
         messages: request
             .messages
@@ -128,7 +126,7 @@ pub fn strip_cache_control_scope(request: MessagesRequest) -> MessagesRequest {
             .map(|message| Message {
                 content: match message.content {
                     MessageContent::Blocks(blocks) => {
-                        MessageContent::Blocks(blocks_without_scope(blocks))
+                        MessageContent::Blocks(blocks.into_iter().map(message_block).collect())
                     }
                     text => text,
                 },
@@ -137,9 +135,23 @@ pub fn strip_cache_control_scope(request: MessagesRequest) -> MessagesRequest {
             .collect(),
         params: MessagesOptionalParams {
             system: request.params.system.map(|system| match system {
-                SystemPrompt::Blocks(blocks) => SystemPrompt::Blocks(blocks_without_scope(blocks)),
+                SystemPrompt::Blocks(blocks) => {
+                    SystemPrompt::Blocks(blocks.into_iter().map(system_block).collect())
+                }
                 text => text,
             }),
+            ..request.params
+        },
+        ..request
+    }
+}
+
+/// Removes `cache_control.scope`, which hosts other than the first-party API reject, from
+/// the top-level `cache_control` and every `system` and message block.
+pub fn strip_cache_control_scope(request: MessagesRequest) -> MessagesRequest {
+    let request = map_request_blocks(request, block_without_scope, block_without_scope);
+    MessagesRequest {
+        params: MessagesOptionalParams {
             cache_control: request
                 .params
                 .cache_control
@@ -206,6 +218,38 @@ mod tests {
         );
         assert_eq!(value["messages"][1]["content"], json!("plain"));
         assert_eq!(strip_cache_control_scope(once.clone()), once);
+    }
+
+    #[rstest]
+    #[case::tool_definition(json!({"tools": [{
+        "name": "lookup", "cache_control": {"type": "ephemeral", "scope": "global"}
+    }]}))]
+    #[case::nested_tool_result(json!({"messages": [{"role": "user", "content": [{
+        "type": "tool_result", "content": [{"type": "text", "text": "result", "cache_control": {
+            "type": "ephemeral", "scope": "global"
+        }}]
+    }]}]}))]
+    #[case::application_input(json!({"messages": [{"role": "assistant", "content": [{
+        "type": "tool_use", "input": {"cache_control": {"scope": "application-data"}}
+    }]}]}))]
+    #[case::unrecognized_top_level_cache(json!({"cache_control": {
+        "type": false, "scope": "global"
+    }}))]
+    fn scope_stripping_preserves_sites_outside_its_existing_contract(#[case] fields: Value) {
+        let Value::Object(fields) = fields else {
+            panic!("case fields are an object")
+        };
+        let request: MessagesRequest = serde_json::from_value(Value::Object(
+            [
+                ("model".to_string(), json!("m")),
+                ("messages".to_string(), json!([])),
+            ]
+            .into_iter()
+            .chain(fields)
+            .collect(),
+        ))
+        .unwrap();
+        assert_eq!(strip_cache_control_scope(request.clone()), request);
     }
 
     #[rstest]

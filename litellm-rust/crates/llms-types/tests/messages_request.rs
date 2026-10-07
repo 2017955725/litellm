@@ -422,3 +422,52 @@ fn builtin_tools_have_typed_options(
     );
     assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
 }
+
+#[rstest]
+#[case::missing(json!({"type":"compact_20260112"}))]
+#[case::input_tokens(json!({"type":"compact_20260112","trigger":{"type":"input_tokens","value":1000,"future":null},"instructions":"keep code"}))]
+#[case::negative_tokens(json!({"type":"compact_20260112","trigger":{"type":"input_tokens","value":-1000}}))]
+#[case::null_trigger(json!({"type":"compact_20260112","trigger":null}))]
+#[case::unknown_trigger(json!({"type":"compact_20260112","trigger":{"type":"future","value":[1,null]}}))]
+#[case::scalar_trigger(json!({"type":"compact_20260112","trigger":false}))]
+#[case::missing_trigger_value(json!({"type":"compact_20260112","trigger":{"type":"input_tokens"}}))]
+#[case::wrong_trigger_value(json!({"type":"compact_20260112","trigger":{"type":"input_tokens","value":"1000"}}))]
+#[case::null_trigger_value(json!({"type":"compact_20260112","trigger":{"type":"input_tokens","value":null}}))]
+fn compaction_triggers_preserve_wire_values_and_edit_recognition(#[case] wire: Value) {
+    use litellm_llms_types::{formats::messages::ContextEdit, recognized::Recognized};
+
+    let parsed: Recognized<ContextEdit> = serde_json::from_value(wire.clone()).unwrap();
+    assert!(matches!(
+        parsed,
+        Recognized::Known(ContextEdit::Compact { .. })
+    ));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+}
+
+#[rstest]
+#[case::integer(json!(1000), litellm_llms_types::recognized::Recognized::Known(1000))]
+#[case::negative(json!(-1000), litellm_llms_types::recognized::Recognized::Known(-1000))]
+#[case::string(json!("1000"), litellm_llms_types::recognized::Recognized::Unrecognized(json!("1000")))]
+#[case::null(json!(null), litellm_llms_types::recognized::Recognized::Unrecognized(json!(null)))]
+fn compaction_exposes_typed_trigger_values(
+    #[case] value: Value,
+    #[case] expected: litellm_llms_types::recognized::Recognized<i64>,
+) {
+    use litellm_llms_types::{
+        formats::messages::{ContextEdit, ContextTrigger},
+        recognized::Recognized,
+    };
+
+    let wire = json!({"type":"compact_20260112","trigger":{"type":"input_tokens","value":value,"future":null}});
+    let parsed: ContextEdit = serde_json::from_value(wire.clone()).unwrap();
+    let ContextEdit::Compact {
+        trigger: Some(Recognized::Known(ContextTrigger::InputTokens { value, extra })),
+        ..
+    } = &parsed
+    else {
+        panic!("expected a typed input-token trigger")
+    };
+    assert_eq!(value, &expected);
+    assert_eq!(extra.get("future"), Some(&Value::Null));
+    assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
+}

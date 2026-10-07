@@ -1,4 +1,7 @@
-use litellm_llms_types::formats::messages::streaming::MessagesStreamEvent;
+use litellm_llms_types::formats::messages::{
+    ContentBlock,
+    streaming::{MessagesContentBlock, MessagesStreamEvent},
+};
 use rstest::rstest;
 use serde_json::{Value, json};
 
@@ -83,6 +86,68 @@ fn stream_block_validation_keeps_its_existing_boundary(
     if let Ok(parsed) = parsed {
         assert_eq!(serde_json::to_value(parsed).unwrap(), wire);
     }
+}
+
+#[rstest]
+#[case::nullable_text_fields(json!({
+    "type":"text","text":null,"thinking":null,"signature":null,"data":null,
+    "id":null,"name":null
+}), true)]
+#[case::nested_content(json!({
+    "type":"document",
+    "source":{"type":"content","content":[{"type":"text","text":"document","future":null}]},
+    "content":[{"type":"tool_reference","tool_name":"lookup"},17],
+    "citations":[{"type":"char_location","cited_text":"document","start_char_index":0,"end_char_index":8}],
+    "caller":{"type":"code_execution_20250825","tool_id":"tool_1"}
+}), true)]
+#[case::tool_fields(json!({
+    "type":"tool_use","input":{"query":"q","nested":{"content":null}},
+    "provider_specific_fields":{"signature":"sig"},"is_error":false,
+    "file_id":"file_1","title":"title","context":"context","tool_name":"lookup",
+    "url":"https://example.com","page_age":"recent","encrypted_content":"ciphertext",
+    "snippet":"snippet","prompt_cache_breakpoint":{"mode":"explicit"}
+}), true)]
+#[case::execution_fields(json!({
+    "type":"code_execution_result","stdout":"output","stderr":"error","return_code":-1,
+    "encrypted_stdout":"ciphertext","error_code":"failed","error_message":"failure",
+    "retrieved_at":"timestamp","server_name":"server",
+    "tool_references":[{"type":"tool_reference","tool_name":"lookup"},null],
+    "file_type":"text","num_lines":2,"start_line":1,"total_lines":2,"is_file_update":true,
+    "lines":["before","after"],"new_lines":1,"new_start":2,"old_lines":1,"old_start":2
+}), true)]
+#[case::opaque_nested_fields(json!({
+    "type":"future","content":17,"input":false,"source":{"type":"future","data":null},
+    "citations":false,"caller":{"type":"future"},"is_error":"future","num_lines":-1,
+    "lines":[17],"tool_references":"future"
+}), true)]
+#[case::wrong_text(json!({"type":"text","text":17}), false)]
+#[case::wrong_id(json!({"type":"tool_use","id":false}), false)]
+#[case::wrong_thinking(json!({"type":"thinking","thinking":[]}), false)]
+fn content_and_stream_blocks_share_payload_value_semantics(
+    #[case] wire: Value,
+    #[case] accepted: bool,
+) {
+    let content = serde_json::from_value::<ContentBlock>(wire.clone());
+    let streaming = serde_json::from_value::<MessagesContentBlock>(wire.clone());
+    assert_eq!(content.is_ok(), accepted);
+    assert_eq!(streaming.is_ok(), accepted);
+    if let (Ok(content), Ok(streaming)) = (content, streaming) {
+        assert_eq!(content.payload, streaming.payload);
+        assert!(content.extra.is_empty());
+        assert_eq!(serde_json::to_value(content).unwrap(), wire);
+        assert_eq!(serde_json::to_value(streaming).unwrap(), wire);
+    }
+}
+
+#[rstest]
+fn flattened_payload_preserves_unknown_fields_named_payload() {
+    let wire = json!({"type":"future","payload":{"nested":null},"future":[1,null]});
+    let content: ContentBlock = serde_json::from_value(wire.clone()).unwrap();
+    let streaming: MessagesContentBlock = serde_json::from_value(wire.clone()).unwrap();
+    assert_eq!(content.extra.get("payload"), wire.get("payload"));
+    assert_eq!(streaming.extra.get("future"), wire.get("future"));
+    assert_eq!(serde_json::to_value(content).unwrap(), wire);
+    assert_eq!(serde_json::to_value(streaming).unwrap(), wire);
 }
 
 #[rstest]

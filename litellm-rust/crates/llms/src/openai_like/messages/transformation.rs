@@ -2,11 +2,18 @@ use litellm_auth::{
     CredentialPlacement, CredentialPlanKind, CredentialRule, ExistingHeaderBehavior,
     ProviderAuthPolicy, SecretValue,
 };
-use litellm_llms_types::formats::messages::MessagesRequest;
-use serde_json::{Map, Value, json};
+use litellm_llms_types::{
+    formats::messages::{
+        BlockContent, CacheControl, ContentBlock, ContentBlockPayload, ContentBlockType,
+        MessagesOptionalParams, MessagesRequest, MessagesTool, ToolDefinition,
+    },
+    recognized::Recognized,
+    serde_compat::Nullable,
+};
+use serde_json::{Map, Value};
 
 use crate::{
-    Error, ErrorDetail,
+    Error,
     anthropic::{
         common_utils::DEFAULT_ANTHROPIC_HEADERS,
         messages::{
@@ -21,6 +28,7 @@ use crate::{
         auth::{AuthScheme, Headers, ValidatedEnvironment},
         messages::{
             context::MessagesTransformContext,
+            normalization::map_request_blocks,
             transformation::{BaseMessagesConfig, complete_messages_url},
         },
     },
@@ -121,7 +129,7 @@ impl BaseMessagesConfig for OpenAILikeMessagesConfig {
         if self.keeps_cache_control_ttl() {
             return Ok(request);
         }
-        with_portable_cache_control(request)
+        Ok(with_portable_cache_control(request))
     }
 
     fn secret_names(&self) -> &'static [&'static str] {
@@ -165,64 +173,107 @@ impl BaseMessagesConfig for OpenAILikeMessagesConfig {
 /// API defines (request, system blocks, tools, message blocks, `tool_result` content) becomes
 /// `{"type": <its type, or "ephemeral">}`, and a non-object one is dropped. Application data
 /// such as `tool_use.input` and `input_schema` is never touched.
-pub fn with_portable_cache_control(request: MessagesRequest) -> Result<MessagesRequest, Error> {
-    let fields = match serde_json::to_value(request) {
-        Ok(Value::Object(fields)) => fields,
-        Ok(_) => {
-            return Err(Error::InvalidType {
-                expected: "an object",
-                actual: "a non-object request",
-            });
-        }
-        Err(error) => {
-            return Err(Error::InvalidRequest(ErrorDetail::invalid(
-                "request", error,
-            )));
-        }
-    };
-    let portable: Map<String, Value> = portable_block(fields)
-        .into_iter()
-        .map(|(key, value)| {
-            let value = match key.as_str() {
-                "system" | "tools" => portable_blocks(value),
-                "messages" => portable_messages(value),
-                _ => value,
-            };
-            (key, value)
-        })
-        .collect();
-    serde_json::from_value(Value::Object(portable))
-        .map_err(|error| Error::InvalidRequest(ErrorDetail::invalid("request", error)))
+pub fn with_portable_cache_control(request: MessagesRequest) -> MessagesRequest {
+    let request = map_request_blocks(request, portable_block, portable_message_block);
+    MessagesRequest {
+        params: MessagesOptionalParams {
+            cache_control: request
+                .params
+                .cache_control
+                .and_then(portable_recognized_cache),
+            tools: request
+                .params
+                .tools
+                .map(|tools| tools.into_iter().map(portable_tool).collect()),
+            ..request.params
+        },
+        ..request
+    }
 }
 
-fn portable_block(block: Map<String, Value>) -> Map<String, Value> {
+fn portable_cache_control(cache_control: CacheControl) -> CacheControl {
+    CacheControl {
+        cache_type: Some(Nullable::Value(
+            cache_control
+                .cache_type
+                .and_then(Nullable::into_value)
+                .unwrap_or_else(|| "ephemeral".to_string()),
+        )),
+        ..CacheControl::default()
+    }
+}
+
+fn portable_recognized_cache(cache: Recognized<CacheControl>) -> Option<Recognized<CacheControl>> {
+    match cache {
+        Recognized::Known(cache) => Some(Recognized::Known(portable_cache_control(cache))),
+        Recognized::Unrecognized(value) => {
+            portable_cache_value(value).map(Recognized::Unrecognized)
+        }
+    }
+}
+
+fn portable_cache_value(cache_control: Value) -> Option<Value> {
+    let Value::Object(cache_control) = cache_control else {
+        return None;
+    };
+    let cache_type = cache_control
+        .into_iter()
+        .find_map(|(key, value)| match (key.as_str(), value) {
+            ("type", Value::String(value)) => Some(value),
+            _ => None,
+        })
+        .unwrap_or_else(|| "ephemeral".to_string());
+    Some(Value::Object(
+        [("type".to_string(), Value::String(cache_type))]
+            .into_iter()
+            .collect(),
+    ))
+}
+
+fn portable_tool(tool: Recognized<MessagesTool>) -> Recognized<MessagesTool> {
+    match tool {
+        Recognized::Known(tool) => {
+            Recognized::Known(tool.map_definition(|definition| ToolDefinition {
+                cache_control: definition.cache_control.and_then(portable_recognized_cache),
+                ..definition
+            }))
+        }
+        Recognized::Unrecognized(Value::Object(fields)) => {
+            Recognized::Unrecognized(Value::Object(portable_object(fields)))
+        }
+        other => other,
+    }
+}
+
+fn portable_block(block: ContentBlock) -> ContentBlock {
+    ContentBlock {
+        cache_control: block.cache_control.and_then(|cache| match cache {
+            Nullable::Value(cache) => Some(Nullable::Value(portable_cache_control(cache))),
+            Nullable::Null => None,
+        }),
+        ..block
+    }
+}
+
+fn portable_object(block: Map<String, Value>) -> Map<String, Value> {
     if !block.contains_key("cache_control") {
         return block;
     }
     block
         .into_iter()
         .filter_map(|(key, value)| match key.as_str() {
-            "cache_control" => portable_cache_control(&value).map(|value| (key, value)),
+            "cache_control" => portable_cache_value(value).map(|value| (key, value)),
             _ => Some((key, value)),
         })
         .collect()
 }
 
-fn portable_cache_control(cache_control: &Value) -> Option<Value> {
-    let cache_control = cache_control.as_object()?;
-    let cache_type = cache_control
-        .get("type")
-        .and_then(Value::as_str)
-        .unwrap_or("ephemeral");
-    Some(json!({ "type": cache_type }))
-}
-
-fn portable_blocks(blocks: Value) -> Value {
+fn portable_unknown_blocks(blocks: Value) -> Value {
     match blocks {
         Value::Array(blocks) => blocks
             .into_iter()
             .map(|block| match block {
-                Value::Object(block) => Value::Object(portable_block(block)),
+                Value::Object(block) => Value::Object(portable_object(block)),
                 other => other,
             })
             .collect(),
@@ -230,44 +281,39 @@ fn portable_blocks(blocks: Value) -> Value {
     }
 }
 
-fn portable_content_block(block: Value) -> Value {
-    let Value::Object(block) = block else {
-        return block;
-    };
+fn portable_message_block(block: ContentBlock) -> ContentBlock {
     let block = portable_block(block);
-    if block.get("type").and_then(Value::as_str) != Some("tool_result") {
-        return Value::Object(block);
+    if !block.is_type(ContentBlockType::ToolResult) {
+        return block;
     }
-    block
-        .into_iter()
-        .map(|(key, value)| match key.as_str() {
-            "content" => (key, portable_blocks(value)),
-            _ => (key, value),
-        })
-        .collect()
-}
-
-fn portable_messages(messages: Value) -> Value {
-    match messages {
-        Value::Array(messages) => messages.into_iter().map(portable_message).collect(),
-        other => other,
+    ContentBlock {
+        payload: ContentBlockPayload {
+            content: block.payload.content.map(|content| match content {
+                Recognized::Known(BlockContent::Blocks(blocks)) => {
+                    Recognized::Known(BlockContent::Blocks(
+                        blocks
+                            .into_iter()
+                            .map(|block| match block {
+                                Recognized::Known(block) => {
+                                    Recognized::Known(portable_block(block))
+                                }
+                                Recognized::Unrecognized(Value::Object(fields)) => {
+                                    Recognized::Unrecognized(Value::Object(portable_object(fields)))
+                                }
+                                other => other,
+                            })
+                            .collect(),
+                    ))
+                }
+                Recognized::Unrecognized(value) => {
+                    Recognized::Unrecognized(portable_unknown_blocks(value))
+                }
+                other => other,
+            }),
+            ..block.payload
+        },
+        ..block
     }
-}
-
-fn portable_message(message: Value) -> Value {
-    let Value::Object(message) = message else {
-        return message;
-    };
-    message
-        .into_iter()
-        .map(|(key, value)| match (key.as_str(), value) {
-            ("content", Value::Array(blocks)) => (
-                key,
-                blocks.into_iter().map(portable_content_block).collect(),
-            ),
-            (_, value) => (key, value),
-        })
-        .collect()
 }
 
 #[cfg(test)]
@@ -276,6 +322,7 @@ mod tests {
 
     use litellm_llms_types::formats::messages::MessagesResponse;
     use rstest::rstest;
+    use serde_json::json;
 
     use super::*;
 
@@ -409,6 +456,72 @@ mod tests {
                 {"type": "text", "text": "b"}
             ])
         );
+    }
+
+    #[rstest]
+    #[case::unknown_tool(
+        json!({"model": "m", "messages": [], "tools": [{
+            "type": "future_tool", "name": "lookup", "cache_control": {"type": "future_cache", "ttl": "1h"},
+            "input_schema": {"cache_control": {"ttl": "schema-data"}},
+            "custom": {"cache_control": {"ttl": "application-data"}}
+        }]}),
+        json!({"model": "m", "messages": [], "tools": [{
+            "type": "future_tool", "name": "lookup", "cache_control": {"type": "future_cache"},
+            "input_schema": {"cache_control": {"ttl": "schema-data"}},
+            "custom": {"cache_control": {"ttl": "application-data"}}
+        }]})
+    )]
+    #[case::malformed_nested_block(
+        json!({"model": "m", "messages": [{"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": "t", "content": [
+                {"type": 9, "cache_control": {"type": null, "ttl": "1h"}, "extra": "kept"},
+                false
+            ]
+        }]}]}),
+        json!({"model": "m", "messages": [{"role": "user", "content": [{
+            "type": "tool_result", "tool_use_id": "t", "content": [
+                {"type": 9, "cache_control": {"type": "ephemeral"}, "extra": "kept"},
+                false
+            ]
+        }]}]})
+    )]
+    #[case::malformed_and_null_cache_values(
+        json!({"model": "m", "messages": [], "cache_control": {"type": 9}, "tools": [
+            {"type": "web_search_20250305", "name": "web_search", "cache_control": false},
+            {"type": "future_tool", "cache_control": null},
+            null
+        ]}),
+        json!({"model": "m", "messages": [], "cache_control": {"type": "ephemeral"}, "tools": [
+            {"type": "web_search_20250305", "name": "web_search"},
+            {"type": "future_tool"},
+            null
+        ]})
+    )]
+    #[case::content_only_recurses_at_message_tool_results(
+        json!({"model": "m", "system": [{"type": "tool_result", "content": [{
+            "cache_control": {"ttl": "system-content-data"}
+        }]}], "messages": [{"role": "user", "content": [
+            {"type": "future_block", "content": [{"cache_control": {"ttl": "unknown-content-data"}}]},
+            {"type": "tool_result", "content": [{"type": "tool_result", "cache_control": {"ttl": "1h"}, "content": [
+                {"cache_control": {"ttl": "deep-content-data"}}
+            ]}]}
+        ]}]}),
+        json!({"model": "m", "system": [{"type": "tool_result", "content": [{
+            "cache_control": {"ttl": "system-content-data"}
+        }]}], "messages": [{"role": "user", "content": [
+            {"type": "future_block", "content": [{"cache_control": {"ttl": "unknown-content-data"}}]},
+            {"type": "tool_result", "content": [{"type": "tool_result", "cache_control": {"type": "ephemeral"}, "content": [
+                {"cache_control": {"ttl": "deep-content-data"}}
+            ]}]}
+        ]}]})
+    )]
+    fn portable_cache_control_preserves_unrecognized_payloads_and_application_data(
+        #[case] input: Value,
+        #[case] expected: Value,
+    ) {
+        let once = with_portable_cache_control(request_from(input));
+        assert_eq!(serde_json::to_value(&once).unwrap(), expected);
+        assert_eq!(with_portable_cache_control(once.clone()), once);
     }
 
     #[rstest]

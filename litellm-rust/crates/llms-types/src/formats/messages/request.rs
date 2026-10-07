@@ -69,6 +69,17 @@ pub enum MessagesTool {
     Custom(CustomTool),
 }
 
+impl MessagesTool {
+    pub fn map_definition(self, f: impl FnOnce(ToolDefinition) -> ToolDefinition) -> Self {
+        match self {
+            Self::Builtin(tool) => Self::Builtin(tool.map_definition(f)),
+            Self::Custom(tool) => Self::Custom(CustomTool {
+                definition: f(tool.definition),
+            }),
+        }
+    }
+}
+
 #[macro_rules_attribute::apply(wire_type)]
 #[serde(try_from = "ToolDefinition")]
 pub struct CustomTool {
@@ -146,11 +157,87 @@ pub enum BuiltinMessagesTool {
     TextEditor20250429(ToolDefinition),
 }
 
+impl BuiltinMessagesTool {
+    pub fn map_definition(self, f: impl FnOnce(ToolDefinition) -> ToolDefinition) -> Self {
+        match self {
+            Self::Advisor(definition) => Self::Advisor(f(definition)),
+            Self::ToolSearchRegex(definition) => Self::ToolSearchRegex(f(definition)),
+            Self::ToolSearchBm25(definition) => Self::ToolSearchBm25(f(definition)),
+            Self::Custom(definition) => Self::Custom(f(definition)),
+            Self::WebSearch(definition) => Self::WebSearch(f(definition)),
+            Self::Computer(definition) => Self::Computer(f(definition)),
+            Self::Bash(definition) => Self::Bash(f(definition)),
+            Self::TextEditor(definition) => Self::TextEditor(f(definition)),
+            Self::CodeExecution(definition) => Self::CodeExecution(f(definition)),
+            Self::WebSearch20260209(definition) => Self::WebSearch20260209(f(definition)),
+            Self::Computer20241022(definition) => Self::Computer20241022(f(definition)),
+            Self::Bash20241022(definition) => Self::Bash20241022(f(definition)),
+            Self::TextEditor20241022(definition) => Self::TextEditor20241022(f(definition)),
+            Self::TextEditor20250124(definition) => Self::TextEditor20250124(f(definition)),
+            Self::CodeExecution20250522(definition) => Self::CodeExecution20250522(f(definition)),
+            Self::Memory(definition) => Self::Memory(f(definition)),
+            Self::WebFetch(definition) => Self::WebFetch(f(definition)),
+            Self::WebFetch20260209(definition) => Self::WebFetch20260209(f(definition)),
+            Self::WebFetch20260309(definition) => Self::WebFetch20260309(f(definition)),
+            Self::WebFetch20260318(definition) => Self::WebFetch20260318(f(definition)),
+            Self::WebSearch20260318(definition) => Self::WebSearch20260318(f(definition)),
+            Self::CodeExecution20260120(definition) => Self::CodeExecution20260120(f(definition)),
+            Self::CodeExecution20260521(definition) => Self::CodeExecution20260521(f(definition)),
+            Self::Computer20251124(definition) => Self::Computer20251124(f(definition)),
+            Self::TextEditor20250429(definition) => Self::TextEditor20250429(f(definition)),
+        }
+    }
+
+    pub fn is_web_search(&self) -> bool {
+        match self {
+            Self::WebSearch(_) | Self::WebSearch20260209(_) | Self::WebSearch20260318(_) => true,
+            Self::Advisor(_)
+            | Self::ToolSearchRegex(_)
+            | Self::ToolSearchBm25(_)
+            | Self::Custom(_)
+            | Self::Computer(_)
+            | Self::Bash(_)
+            | Self::TextEditor(_)
+            | Self::CodeExecution(_)
+            | Self::Computer20241022(_)
+            | Self::Bash20241022(_)
+            | Self::TextEditor20241022(_)
+            | Self::TextEditor20250124(_)
+            | Self::CodeExecution20250522(_)
+            | Self::Memory(_)
+            | Self::WebFetch(_)
+            | Self::WebFetch20260209(_)
+            | Self::WebFetch20260309(_)
+            | Self::WebFetch20260318(_)
+            | Self::CodeExecution20260120(_)
+            | Self::CodeExecution20260521(_)
+            | Self::Computer20251124(_)
+            | Self::TextEditor20250429(_) => false,
+        }
+    }
+}
+
+#[macro_rules_attribute::apply(wire_type)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum ContextTrigger {
+    InputTokens {
+        value: Recognized<i64>,
+        #[serde(flatten)]
+        extra: Map<String, Value>,
+    },
+}
+
 #[macro_rules_attribute::apply(wire_type)]
 #[serde(tag = "type")]
 pub enum ContextEdit {
     #[serde(rename = "compact_20260112")]
     Compact {
+        #[serde(
+            default,
+            skip_serializing_if = "Option::is_none",
+            deserialize_with = "crate::serde_compat::deserialize_present"
+        )]
+        trigger: Option<Recognized<ContextTrigger>>,
         #[serde(flatten)]
         extra: Map<String, Value>,
     },
@@ -605,7 +692,11 @@ mod tests {
     #[case::compact(
         json!({"type": "compact_20260112", "trigger": {"type": "input_tokens", "value": 1}}),
         Recognized::Known(ContextEdit::Compact {
-            extra: Map::from_iter([("trigger".to_string(), json!({"type": "input_tokens", "value": 1}))]),
+            trigger: Some(Recognized::Known(ContextTrigger::InputTokens {
+                value: Recognized::Known(1),
+                extra: Map::new(),
+            })),
+            extra: Map::new(),
         })
     )]
     #[case::clear_tool_uses(
@@ -632,7 +723,7 @@ mod tests {
     #[case::edits(
         json!({"edits": [{"type": "compact_20260112"}]}),
         Recognized::Known(ContextManagement {
-            edits: Some(vec![Recognized::Known(ContextEdit::Compact { extra: Map::new() })]),
+            edits: Some(vec![Recognized::Known(ContextEdit::Compact { trigger: None, extra: Map::new() })]),
             extra: Map::new(),
         })
     )]
