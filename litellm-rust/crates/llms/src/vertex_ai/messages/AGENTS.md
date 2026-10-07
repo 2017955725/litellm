@@ -30,11 +30,16 @@
 
 # References
 
+## Python
+
 - `litellm/llms/vertex_ai/vertex_ai_partner_models/anthropic/experimental_pass_through/transformation.py` (`VertexAIPartnerModelsAnthropicMessagesConfig`)
 - `litellm/llms/vertex_ai/vertex_llm_base.py` (`VertexBase`)
 - `litellm/llms/vertex_ai/common_utils.py` (`get_vertex_base_url`)
 - `litellm/llms/vertex_ai/vertex_ai_partner_models/anthropic/output_params_utils.py` (`sanitize_vertex_anthropic_output_params`)
 - `litellm/utils.py` (`ProviderConfigManager._get_provider_anthropic_messages_config_cached`, adapter selection)
+
+## Docs
+
 - [Vertex AI Claude request predictions](https://docs.cloud.google.com/gemini-enterprise-agent-platform/models/partner-models/claude/use-claude)
 - [Claude on Vertex AI](https://platform.claude.com/docs/en/build-with-claude/claude-on-vertex-ai.md)
 - [Messages API](https://platform.claude.com/docs/en/api/http/messages/create)

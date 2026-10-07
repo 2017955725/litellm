@@ -19,5 +19,11 @@
 
 # References
 
-- Python: `litellm/llms/bedrock_mantle/messages/transformation.py`, `litellm/llms/bedrock_mantle/common_utils.py`
+## Python
+
+- `litellm/llms/bedrock_mantle/messages/transformation.py`
+- `litellm/llms/bedrock_mantle/common_utils.py`
+
+## Docs
+
 - [Native Anthropic Messages API, including Mantle](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.md)

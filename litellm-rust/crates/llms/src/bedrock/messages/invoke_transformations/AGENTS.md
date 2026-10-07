@@ -25,9 +25,14 @@
 
 # References
 
+## Python
+
 - `litellm/llms/bedrock/messages/invoke_transformations/anthropic_claude3_transformation.py` (`AmazonAnthropicClaudeMessagesConfig`)
 - `litellm/llms/bedrock/chat/invoke_transformations/base_invoke_transformation.py` (`AmazonInvokeConfig`, URL and model ID)
 - `litellm/llms/bedrock/base_aws_llm.py` (`BaseAWSLLM`, signing)
+
+## Docs
+
 - [Claude Messages request and response](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html)
 - [Claude Messages request and response, Markdown](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.md)
 - [InvokeModelWithResponseStream](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InvokeModelWithResponseStream.html)

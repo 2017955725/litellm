@@ -26,9 +26,14 @@
 
 # References
 
+## Python
+
 - `litellm/llms/bedrock/claude_platform/messages_transformation.py` (`BedrockClaudePlatformMessagesConfig`)
 - `litellm/llms/bedrock/claude_platform/common_utils.py`
 - `litellm/llms/bedrock/claude_platform/transformation.py`, the chat config, only as a cross-check of the same auth and body filtering
+
+## Docs
+
 - [Claude Platform on AWS overview](https://platform.claude.com/docs/en/build-with-claude/claude-platform-on-aws) ([Markdown](https://platform.claude.com/docs/en/build-with-claude/claude-platform-on-aws.md), [llms.txt](https://platform.claude.com/llms.txt))
 - [Making requests, AWS user guide](https://docs.aws.amazon.com/claude-platform/latest/userguide/making-requests.html) ([Markdown](https://docs.aws.amazon.com/claude-platform/latest/userguide/making-requests.md), [llms.txt](https://docs.aws.amazon.com/claude-platform/latest/userguide/llms.txt))
 - [Messages API](https://platform.claude.com/docs/en/api/http/messages/create)

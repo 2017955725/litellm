@@ -29,9 +29,14 @@
 
 # References
 
+## Python
+
 - `litellm/llms/edenai/messages/transformation.py` (`EdenAIAnthropicMessagesConfig`)
 - `litellm/llms/openai_like/messages/transformation.py` (`JSONProviderAnthropicMessagesConfig`)
 - `litellm/llms/edenai/common_utils.py`
+
+## Docs
+
 - [Create Anthropic Message](https://www.edenai.co/docs/api-reference/anthropic-messages/create-anthropic-message)
 - [Create Anthropic Message, Markdown](https://www.edenai.co/docs/api-reference/anthropic-messages/create-anthropic-message.md)
 - [Eden AI documentation index, llms.txt](https://www.edenai.co/docs/llms.txt)

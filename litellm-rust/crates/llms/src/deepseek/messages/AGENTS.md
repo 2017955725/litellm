@@ -27,5 +27,10 @@
 
 # References
 
+## Python
+
 - `litellm/llms/deepseek/messages/transformation.py` (`DeepSeekAnthropicMessagesConfig`)
+
+## Docs
+
 - [Anthropic API compatibility guide](https://api-docs.deepseek.com/guides/anthropic_api/) (no Markdown or llms.txt variant is published)

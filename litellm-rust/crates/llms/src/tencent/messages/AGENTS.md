@@ -27,8 +27,13 @@
 
 # References
 
+## Python
+
 - `litellm/llms/tencent/messages/transformation.py` (`TencentAnthropicMessagesConfig`)
 - `litellm/llms/anthropic/pass_through/messages/transformation.py` (the Anthropic config it subclasses)
 - `litellm/utils.py` (`ProviderConfigManager._get_provider_anthropic_messages_config_cached`, provider selection)
+
+## Docs
+
 - [Anthropic Message protocol fields](https://intl.cloud.tencent.com/document/product/1300/82347)
 - [Tencent Cloud site overview, llms.txt](https://www.tencentcloud.com/llms.txt)

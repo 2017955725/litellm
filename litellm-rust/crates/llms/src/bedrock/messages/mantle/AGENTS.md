@@ -26,7 +26,13 @@
 
 # References
 
-- Python wire format: `litellm/llms/bedrock/messages/mantle_transformation.py`, `build_mantle_messages_url` in `litellm/llms/bedrock/common_utils.py`
+## Python
+
+- `litellm/llms/bedrock/messages/mantle_transformation.py`
+- `build_mantle_messages_url` in `litellm/llms/bedrock/common_utils.py`
+
+## Docs
+
 - [Native Anthropic Messages API, including Mantle](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.md)
 - [APIs supported by Amazon Bedrock, by endpoint](https://docs.aws.amazon.com/bedrock/latest/userguide/apis.md)
 - [Bedrock documentation index, llms.txt](https://docs.aws.amazon.com/bedrock/latest/userguide/llms.txt)

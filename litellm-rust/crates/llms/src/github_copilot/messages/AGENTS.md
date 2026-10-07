@@ -26,9 +26,14 @@
 
 # References
 
+## Python
+
 - `litellm/llms/github_copilot/messages/transformation.py` (`GithubCopilotAnthropicMessagesConfig`)
 - `litellm/llms/github_copilot/authenticator.py`
 - `litellm/llms/github_copilot/common_utils.py`
+
+## Docs
+
 - [Copilot SDK streaming events, which list `/v1/messages` as a usage endpoint](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/streaming-events)
 - [The same page as Markdown](https://docs.github.com/api/article/body?pathname=/en/copilot/how-tos/copilot-sdk/features/streaming-events)
 - [GitHub documentation index, llms.txt](https://docs.github.com/llms.txt)

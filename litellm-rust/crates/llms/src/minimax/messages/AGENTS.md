@@ -26,9 +26,14 @@
 
 # References
 
+## Python
+
 - `litellm/llms/minimax/messages/transformation.py` (`MinimaxMessagesConfig`)
 - `litellm/llms/anthropic/pass_through/messages/transformation.py` (`AnthropicMessagesConfig`, where most behavior is inherited)
 - `ProviderConfigManager._get_provider_anthropic_messages_config_cached` in `litellm/utils.py`
+
+## Docs
+
 - [Messages API](https://platform.minimax.io/docs/api-reference/text-chat-anthropic)
 - [Messages API, Markdown](https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md)
 - [Explicit prompt caching](https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache.md)

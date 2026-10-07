@@ -28,7 +28,12 @@
 
 # References
 
+## Python
+
 - `litellm/llms/openai_like/messages/transformation.py` (`OpenAILikeAnthropicMessagesConfig` for per-deployment, `JSONProviderAnthropicMessagesConfig` for registry providers)
 - `litellm/llms/openai_like/providers.json` and `ProviderConfigManager._get_provider_anthropic_messages_config_cached` in `litellm/utils.py`
+
+## Docs
+
 - [Anthropic Messages protocol reference for this generic adapter](https://platform.claude.com/docs/en/api/messages/create)
 - [Anthropic documentation index, llms.txt](https://platform.claude.com/llms.txt)

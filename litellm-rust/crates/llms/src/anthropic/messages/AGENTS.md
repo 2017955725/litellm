@@ -29,8 +29,13 @@ This directory owns Anthropic's implementation of the Messages adapter contract 
 
 # References
 
+## Python
+
 - `litellm/llms/anthropic/pass_through/messages/transformation.py` (`AnthropicMessagesConfig`)
 - `litellm/llms/anthropic/common_utils.py` (auth, URL, OAuth and beta helpers)
+
+## Docs
+
 - [Messages API](https://platform.claude.com/docs/en/api/http/messages/create) ([Markdown](https://platform.claude.com/docs/en/api/messages/create.md))
 - [Beta headers](https://platform.claude.com/docs/en/api/beta-headers.md)
 - [Versioning](https://platform.claude.com/docs/en/api/versioning.md)

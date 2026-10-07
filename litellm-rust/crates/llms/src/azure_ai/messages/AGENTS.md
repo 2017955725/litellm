@@ -31,9 +31,14 @@ This directory owns Azure's Messages adapter: its endpoints, authentication poli
 
 # References
 
+## Python
+
 - `litellm/llms/azure_ai/anthropic/messages_transformation.py` (`AzureAnthropicMessagesConfig`)
 - `litellm/llms/azure/common_utils.py` (`BaseAzureLLM._base_validate_azure_environment`, key lookup)
 - `ProviderConfigManager._get_provider_anthropic_messages_config_cached` in `litellm/utils.py` (Claude-only selection)
+
+## Docs
+
 - [Claude in Microsoft Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry) ([Markdown](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry.md), indexed in [llms.txt](https://platform.claude.com/llms.txt))
 - [Deploy and use Claude models in Microsoft Foundry](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-claude)
 - [Messages API](https://platform.claude.com/docs/en/api/http/messages/create)
