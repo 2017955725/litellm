@@ -120,7 +120,7 @@ class _Provider:
         return {"model": self.body_model, "state": _INPUT, "questions": _SYSTEM_ONE_QUESTIONS}
 
     def upstream_reply(self) -> dict[str, JsonValue]:
-        answer: dict[str, JsonValue] = {
+        answer: Final[dict[str, JsonValue]] = {
             "model": self.body_model,
             "answers": _SYSTEM_ONE_ANSWERS,
             "usage": _SYSTEM_ONE_USAGE,
