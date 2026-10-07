@@ -37,3 +37,22 @@ A provider adapter may explicitly reuse another provider's transformation helper
 - Choose traversal for the operation: per-block mapping, filtering, or whole-message processing when blocks depend on one another
 - Add an abstraction only when it clarifies a repeated responsibility
 - Verify observable auth precedence, headers, serialization, passthrough, and transformations, not code structure
+
+## Folder AGENTS.md standard
+
+Every `src/<provider>/` and `src/<provider>/<format>/` folder with non-obvious rules gets an AGENTS.md. It records what a reader cannot learn quickly from the code. Use these sections in this order, as bullet lists, and drop any section with nothing to say
+
+- `# Scope`: one or two bullets on what the folder owns, including which LiteLLM provider and route spellings reach it
+- `# Invariants`: rules that must keep holding and that a plausible change could break, such as a credential never being sent to another vendor's host
+- `# Boundaries`: what does not belong here and where it goes, only when it differs from or sharpens the crate-wide rules above
+- `# Gotchas`: upstream or Python behavior that looks wrong but is intended, or looks right but is wrong
+- `# Decisions`: layout and design choices with a one-clause reason, such as why a provider has no folder of its own
+- `# Known gaps`: Rust behavior that still differs from what it should be. Remove the bullet in the change that closes it
+- `# References`: the Python parity source paths, then provider API docs. Prefer `.md` and `llms.txt` variants when they exist
+
+Rules for the content
+
+- Never restate what the code says: URL templates, env var lists, header names, method lists, and step-by-step transforms belong in code and tests. Mention one only when it is an invariant or a gotcha
+- Do not repeat the crate-wide boundaries from this file in every folder
+- One fact per bullet, one or two lines each. Aim for under 15 bullets outside `# References`
+- No line numbers, no code walkthroughs, no history beyond the reason for a decision

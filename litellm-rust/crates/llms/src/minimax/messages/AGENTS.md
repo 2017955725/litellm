@@ -1,0 +1,35 @@
+# Scope
+
+- MiniMax's Messages adapter for its Anthropic-compatible `/v1/messages` API, reached by every `minimax/<model>` Messages call with no model-name gating, unlike the Claude-only Bedrock Mantle, Vertex AI and Azure AI branches
+
+# Invariants
+
+- Never send an Anthropic credential to MiniMax. Python silently falls back to `ANTHROPIC_API_KEY` and `ANTHROPIC_AUTH_TOKEN` when no MiniMax key exists; do not port that, and name MiniMax in the missing-key error
+- The caller's `thinking` and `output_config` reach MiniMax unchanged, because MiniMax does not use Anthropic thinking semantics. Only `reasoning_effort` is still mapped to native params first
+- `x-anthropic-billing-header` text blocks are stripped from `system`, and `system` is omitted when nothing remains
+- No `anthropic-beta` value is forwarded, because the beta allowlist has no `minimax` entry
+
+# Gotchas
+
+- A China-region base such as `https://api.minimaxi.com/anthropic`, a base ending in `/v1`, and one already ending in `/v1/messages` must all resolve to the same `/v1/messages` path
+- Environment validation receives the caller's `api_base`, not the resolved default
+- `compaction` is unsupported because the provider is not `anthropic`, even though the rest of the payload policy is Anthropic's
+
+# Decisions
+
+- Reuse the Anthropic request shaping and response/SSE decoding from `anthropic/messages` explicitly, and keep only MiniMax's differences here, since Python's config is a thin subclass of Anthropic's
+- MiniMax-only content blocks (image, video, mid-conversation system) live in `litellm-llms-types::providers::minimax`, not here
+
+# Known gaps
+
+- `mod.rs` is empty, so there is no Rust MiniMax Messages adapter yet
+
+# References
+
+- `litellm/llms/minimax/messages/transformation.py` (`MinimaxMessagesConfig`)
+- `litellm/llms/anthropic/pass_through/messages/transformation.py` (`AnthropicMessagesConfig`, where most behavior is inherited)
+- `ProviderConfigManager._get_provider_anthropic_messages_config_cached` in `litellm/utils.py`
+- [Messages API](https://platform.minimax.io/docs/api-reference/text-chat-anthropic)
+- [Messages API, Markdown](https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md)
+- [Explicit prompt caching](https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache.md)
+- [MiniMax documentation index, llms.txt](https://platform.minimax.io/docs/llms.txt)
