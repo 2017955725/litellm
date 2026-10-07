@@ -258,3 +258,23 @@ def test_duration_pricing_rejects_short_lived_prefix_before_long_lived_suffix(po
     history, estimates = advance_baseline_history(BaselineHistory(), (observation,))
     assert estimates[0].usage is None and estimates[0].reason == "unsupported_cache_plan"
     assert not history.entries
+
+
+@pytest.mark.parametrize("writes", (0, 50, None))
+def test_cache_creation_split_is_optional_only_without_writes(writes: int | None) -> None:
+    usage: Final = Usage(
+        prompt_tokens=100,
+        completion_tokens=10,
+        total_tokens=110,
+        prompt_tokens_details=PromptTokensDetailsWrapper(
+            text_tokens=100 - (writes or 0),
+            cached_tokens=0,
+            cache_creation_tokens=writes,
+        ),
+    )
+    observed: Final = _observation("no-split", usage=usage, plan=CountedPromptCachePlan(100, ()))
+    restored: Final = BaselineObservation.model_validate_json(observed.model_dump_json())
+    estimate: Final = _replay(restored)[0]
+    assert (estimate.usage is not None) is (writes == 0)
+    if estimate.usage is not None:
+        assert estimate.usage.prompt_tokens == usage.prompt_tokens

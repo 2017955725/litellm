@@ -76,12 +76,12 @@ def _complete_usage(usage: Usage | None, policy: str = "anthropic") -> bool:
     if usage is None or usage.prompt_tokens < 0 or usage.completion_tokens < 0:
         return False
     details: Final = usage.prompt_tokens_details
-    if details is None:
+    if details is None or not hasattr(details, "cache_creation_tokens"):
         return False
     values: Final = (details.text_tokens, details.cached_tokens, details.cache_creation_tokens)
     if any(value is None or value < 0 for value in values):
         return False
-    split: Final = None if policy == "estimated" else details.cache_creation_token_details
+    split: Final = details.cache_creation_token_details if hasattr(details, "cache_creation_token_details") else None
     writes: Final = details.cache_creation_tokens or 0
     modalities: Final = (details.audio_tokens or 0, details.image_tokens or 0, details.video_tokens or 0)
     if policy == "estimated":

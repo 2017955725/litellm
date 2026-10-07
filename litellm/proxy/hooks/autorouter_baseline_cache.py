@@ -25,10 +25,10 @@ from litellm.llms.anthropic.prompt_cache_prediction import (
     TokenCounter,
     UnsupportedCachePlan,
     UnsupportedPredictionTarget,
-    capture_native_baseline_parameters,
     count_cache_plan,
     count_prompt_tokens,
     parse_cache_plan,
+    prepare_native_baseline_body,
     resolve_baseline_prediction_target,
     supported_baseline_recipient,
     supported_prediction_headers,
@@ -49,7 +49,7 @@ from litellm.proxy.spend_tracking.savings import (
     _proxy_llm_router,  # pyright: ignore[reportPrivateUsage]  # existing optional proxy-router owner
     _resolve_model,  # pyright: ignore[reportPrivateUsage]  # shared model identity resolver
 )
-from litellm.router_utils.baseline_request import baseline_request, capture_baseline_parameters
+from litellm.router_utils.baseline_request import baseline_request
 from litellm.types.llms.base import LiteLLMBaseModel
 from litellm.types.router import BaselineRouteStamp
 from litellm.types.utils import CallTypes, ModelInfo, Usage
@@ -93,8 +93,8 @@ class BaselineCacheContext:
     baseline_deployment_id: str | None
     estimated_request: dict[str, JsonValue] | None = field(default=None, repr=False)
     estimated: bool = False
-    baseline_parameters: Mapping[str, JsonValue] | None = field(default=None, repr=False)
-    selected_parameters: Mapping[str, JsonValue] | None = field(default=None, repr=False)
+    baseline_body: Mapping[str, JsonValue] | None = field(default=None, repr=False)
+    selected_body_digest: str | None = field(default=None, repr=False)
     invalidated: str | None = None
     finalization: asyncio.Task[CapturedBaselineObservation] | None = field(default=None, repr=False, compare=False)
 
@@ -128,6 +128,10 @@ class _UsageContainer(pydantic.BaseModel):
 
 def _digest(value: object) -> str:
     return hashlib.sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+def _native_body_digest(body: Mapping[str, JsonValue]) -> str:
+    return _digest({key: value for key, value in body.items() if key not in ("metadata", "stream")})
 
 
 class AutoRouterBaselineCache(CustomLogger):
@@ -168,7 +172,7 @@ class AutoRouterBaselineCache(CustomLogger):
             return
         try:
             raw_metadata: Final = kwargs.get(get_metadata_variable_name_from_kwargs(kwargs))
-            metadata: Final = raw_metadata if isinstance(raw_metadata, Mapping) else {}
+            metadata: Final = _METADATA.validate_python(raw_metadata) if isinstance(raw_metadata, Mapping) else {}
             if metadata.get(INTERNAL_CALL_ORIGIN_METADATA_KEY):
                 return
             if logging_obj.baseline_cache_context is not None:
@@ -224,7 +228,7 @@ class AutoRouterBaselineCache(CustomLogger):
             estimated_request: Final = prepare_cache_request(projected) if estimated and projected is not None else None
             scope: Final = "autorouter-baseline:v3:" + _digest(
                 (
-                    "baseline_request_v1" if estimated else "baseline_request_v2",
+                    "baseline_request_v2" if estimated else "baseline_request_v3",
                     request.user_api_key_hash,
                     session,
                     request.route.router_name,
@@ -259,6 +263,13 @@ class AutoRouterBaselineCache(CustomLogger):
                 ),
             )
             selected_model: Final = kwargs.get("model")
+            selected_body: Final = (
+                prepare_native_baseline_body(
+                    kwargs, selected_model if isinstance(selected_model, str) else logging_obj.model
+                )
+                if not estimated
+                else None
+            )
             logging_obj.baseline_cache_context = BaselineCacheContext(
                 self,
                 capture,
@@ -266,18 +277,10 @@ class AutoRouterBaselineCache(CustomLogger):
                 request.route.baseline_deployment_id,
                 estimated_request,
                 estimated,
-                (
-                    capture_baseline_parameters(projected)
-                    if estimated
-                    else capture_native_baseline_parameters(projected, identity.model)
-                )
-                if projected is not None
+                prepare_native_baseline_body(projected, target.model)
+                if not estimated and projected is not None and isinstance(target, NativePredictionTarget)
                 else None,
-                capture_baseline_parameters(kwargs, include_extra_body=call_type != CallTypes.anthropic_messages)
-                if estimated
-                else capture_native_baseline_parameters(
-                    kwargs, selected_model if isinstance(selected_model, str) else logging_obj.model
-                ),
+                _native_body_digest(selected_body) if selected_body is not None else None,
             )
         except Exception:  # noqa: BLE001  # optional observation cannot fail inference
             verbose_proxy_logger.warning("Auto-router baseline observation could not be initialized")
@@ -406,8 +409,6 @@ def _consume_finalization(task: asyncio.Task[CapturedBaselineObservation]) -> No
 async def _capture_native(
     context: BaselineCacheContext, logging_obj: Logging, response_obj: object
 ) -> CapturedBaselineObservation:
-    from litellm.llms.anthropic.prompt_cache_prediction import project_baseline_body
-
     capture: Final = context.capture
     original: Final = capture.observation
     event: Final = _WireEvent.model_validate(logging_obj.model_call_details)
@@ -441,23 +442,22 @@ async def _capture_native(
             )
         )
     body: Final = _JSON_BODY.validate_json(wire.content)
-    same: Final = (
-        logging_obj.get_router_model_id() == context.baseline_deployment_id
-        and body.get("model") == target.model
-        and context.baseline_parameters is not None
-        and context.baseline_parameters == context.selected_parameters
-    )
-    projected: Final = body if same else project_baseline_body(body, context.baseline_parameters, target.model)
-    if projected is None:
+    projected: Final = context.baseline_body
+    if projected is None or context.selected_body_digest != _native_body_digest(body):
         return capture.with_observation(
             original.model_copy(
                 update={
                     "available_at": available,
                     "usage": usage,
-                    "reason": "unsupported_baseline_settings",
+                    "reason": "unsupported_baseline_settings"
+                    if projected is None
+                    else "unsupported_request_transformation",
                 }
             )
         )
+    same: Final = logging_obj.get_router_model_id() == context.baseline_deployment_id and _native_body_digest(
+        projected
+    ) == _native_body_digest(body)
     plan, reason = await context.collector.plan(target, wire, projected, usage)
     return capture.with_observation(
         BaselineObservation(
@@ -466,7 +466,9 @@ async def _capture_native(
             available_at=available,
             outcome="complete",
             baseline_equivalent=same,
-            usage=usage,
+            usage=usage.model_copy(update={"speed": projected.get("speed")})
+            if usage is not None and not same
+            else usage,
             plan=plan,
             reason=reason,
             minimum_cache_tokens=get_prompt_cache_min_tokens(target.model),
