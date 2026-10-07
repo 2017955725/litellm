@@ -38,6 +38,7 @@ from litellm.llms.prompt_cache_estimation import (
     count_prefix_tokens,
     estimate_cache_plan,
     normalize_cache_usage,
+    prepare_baseline_usage,
     prepare_cache_request,
 )
 from litellm.proxy.spend_tracking.baseline_accounting import BaselineObservation
@@ -563,13 +564,7 @@ async def _capture_estimated(
                 update={
                     "available_at": available,
                     "outcome": "uncertain" if context.invalidated or usage is None else "complete",
-                    "usage": usage.model_copy(
-                        update={key: context.estimated_request.get(key) for key in ("speed", "inference_geo")}
-                    )
-                    if usage is not None
-                    and context.estimated_request is not None
-                    and context.capture.provider == "anthropic"
-                    else usage,
+                    "usage": prepare_baseline_usage(usage, context.capture.provider, context.estimated_request),
                     "plan": plan,
                     "minimum_cache_tokens": get_prompt_cache_min_tokens(
                         f"{context.capture.provider}/{context.capture.model}"

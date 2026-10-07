@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from itertools import accumulate, groupby
+from itertools import groupby
 from math import isfinite
 from types import MappingProxyType
 from typing import Final, Literal
@@ -17,7 +17,7 @@ from pydantic import ConfigDict, Field
 
 from litellm.litellm_core_utils.llm_cost_calc.utils import parse_prompt_tokens_details
 from litellm.llms.anthropic.prompt_cache_prediction import CountedBreakpoint, CountedPromptCachePlan
-from litellm.types.llms.base import CachedTokensDetails, LiteLLMBaseModel
+from litellm.types.llms.base import LiteLLMBaseModel
 from litellm.types.utils import CacheCreationTokenDetails, PromptTokensDetailsWrapper, Usage
 
 MAX_CACHE_TTL: Final = 3600
@@ -189,44 +189,15 @@ def _usage_with_cache(
             }
         ),
     )
-    details: Final = _modeled_modalities(remapped, total, read, writes)
     return Usage.model_validate(
         {
             **usage.model_dump(),
             "prompt_tokens": total,
             "total_tokens": total + usage.completion_tokens,
-            "prompt_tokens_details": details,
+            "prompt_tokens_details": remapped,
             "cache_read_input_tokens": read,
             "cache_creation_input_tokens": writes,
         },
-    )
-
-
-def _modeled_modalities(
-    details: PromptTokensDetailsWrapper, total: int, read: int, writes: int
-) -> PromptTokensDetailsWrapper:
-    counts: Final = (details.audio_tokens or 0, details.image_tokens or 0, details.video_tokens or 0)
-    if total <= 0:
-        return details.model_copy(update={"cached_tokens_details": None})
-    boundaries: Final = tuple(accumulate(counts, initial=0))
-
-    def scale(tokens: int) -> tuple[int, ...]:
-        return tuple(
-            tokens * right // total - tokens * left // total for left, right in zip(boundaries, boundaries[1:])
-        )
-
-    audio, image, video = scale(total - read - writes)
-    cached_audio, cached_image, _ = scale(read)
-    return details.model_copy(
-        update={
-            "text_tokens": total - read - writes - audio - image - video,
-            "audio_tokens": audio + cached_audio,
-            "image_tokens": image + cached_image,
-            "video_tokens": video,
-            "cached_tokens_details": CachedTokensDetails(
-                audio_tokens=cached_audio, image_tokens=cached_image, text_tokens=0
-            ),
-        }
     )
 
 

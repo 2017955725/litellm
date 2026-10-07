@@ -2,17 +2,20 @@ from dataclasses import replace
 from typing import Final
 
 import pytest
-from pydantic import JsonValue
+from pydantic import JsonValue, TypeAdapter
 
 import litellm
+from litellm.litellm_core_utils.llm_cost_calc.utils import generic_cost_per_token
+from litellm.llms.anthropic.chat.transformation import AnthropicConfig
 from litellm.llms.prompt_cache_estimation import estimate_cache_plan, normalize_cache_usage, prepare_cache_request
 from litellm.proxy.spend_tracking.baseline_accounting import (
     BaselineHistory,
     BaselineObservation,
     advance_baseline_history,
 )
-from litellm.proxy.spend_tracking.savings import BaselineCostSnapshot, price_baseline_comparison
+from litellm.proxy.spend_tracking.savings import BaselineCostSnapshot, _baseline_usage, price_baseline_comparison
 from litellm.router_utils.baseline_request import NATIVE_ONLY_PARAMETERS
+from litellm.types.llms.anthropic import ANTHROPIC_TOOL_SEARCH_TOOL_TYPES
 from litellm.types.utils import ModelInfo, Usage
 
 _PRICES: Final[ModelInfo] = {
@@ -211,6 +214,119 @@ def test_explicit_system_and_tool_cache_writes_are_reused(key: str, block: dict[
     assert 0 < writes < first.usage.prompt_tokens
     assert replay[0].usage.prompt_tokens_details.cached_tokens == writes
     assert replay[0].usage.prompt_tokens_details.cache_creation_tokens == 0
+
+
+@pytest.mark.parametrize("carrier", ("native", "chat_outer", "chat_nested", "chat_both"))
+@pytest.mark.parametrize("ttl,seconds", (("5m", 300), ("1h", 3600)))
+def test_tool_cache_controls_warm_the_marked_prefix_with_requested_lifetime(
+    carrier: str, ttl: str, seconds: int
+) -> None:
+    control: Final = {"type": "ephemeral", "ttl": ttl}
+    definition: Final = {"name": "lookup", "description": _PROMPT, "parameters": {"type": "object"}}
+    tool: Final = (
+        {"name": "lookup", "description": _PROMPT, "input_schema": {"type": "object"}, "cache_control": control}
+        if carrier == "native"
+        else {
+            "type": "function",
+            "function": {
+                **definition,
+                **(
+                    {"cache_control": {"type": "ephemeral", "ttl": "1h" if ttl == "5m" else "5m"}}
+                    if carrier == "chat_both"
+                    else {"cache_control": control}
+                    if carrier == "chat_nested"
+                    else {}
+                ),
+            },
+            **({"cache_control": control} if carrier in ("chat_outer", "chat_both") else {}),
+        }
+    )
+    outgoing: Final = TypeAdapter(list[dict[str, JsonValue]]).validate_python(
+        AnthropicConfig().map_openai_params({"tools": [tool]}, {}, "claude-opus-5-5", False)["tools"]
+    )
+    assert outgoing[0]["cache_control"] == control
+    first: Final = _observation(
+        _request(tools=[tool, {"name": "following", "description": _PROMPT}], system=_PROMPT),
+        provider="anthropic",
+    )
+    assert first.plan is not None and len(first.plan.breakpoints) == 1
+    marker: Final = first.plan.breakpoints[0]
+    assert marker.ttl_seconds == seconds
+    assert 0 < marker.prefix_tokens < first.usage.prompt_tokens
+    history, cold = advance_baseline_history(BaselineHistory(), (first,))
+    _, warm = advance_baseline_history(
+        history, (first.model_copy(update={"request_id": "warm", "started_at": 10002.0, "available_at": 10003.0}),)
+    )
+    assert cold[0].usage is not None and warm[0].usage is not None
+    assert cold[0].usage.prompt_tokens_details.cache_creation_tokens == marker.prefix_tokens
+    assert warm[0].usage.prompt_tokens_details.cached_tokens == marker.prefix_tokens
+    assert warm[0].usage.prompt_tokens_details.cache_creation_tokens == 0
+
+
+def test_nested_tool_marker_keeps_only_content_before_its_boundary_in_cache_identity() -> None:
+    definition: Final = {
+        "name": "lookup",
+        "description": _PROMPT,
+        "parameters": {"type": "object", "properties": {"cache_control": {"const": "original"}}},
+    }
+    marked: Final = {
+        "type": "function",
+        "function": {**definition, "cache_control": {"type": "ephemeral", "ttl": "5m"}},
+    }
+    first: Final = _observation(
+        _request(tools=[{"name": "earlier"}, marked, {"name": "following"}], system="system"), provider="anthropic"
+    )
+    assert first.plan is not None and len(first.plan.breakpoints) == 1
+    original: Final = first.plan.breakpoints[0].fingerprint
+    for earlier, current, suffix, equivalent in (
+        ({"name": "earlier"}, marked, "changed", True),
+        (
+            {"name": "earlier"},
+            {"type": "function", "function": definition, "cache_control": {"type": "ephemeral", "ttl": "1h"}},
+            "changed",
+            True,
+        ),
+        ({"name": "changed"}, marked, "following", False),
+        (
+            {"name": "earlier"},
+            {
+                "type": "function",
+                "function": {
+                    **definition,
+                    "parameters": {"type": "object", "properties": {"cache_control": {"const": "changed"}}},
+                    "cache_control": {"type": "ephemeral", "ttl": "5m"},
+                },
+            },
+            "following",
+            False,
+        ),
+    ):
+        changed: Final = _observation(
+            _request(
+                tools=[earlier, current, {"name": suffix}],
+                system=suffix,
+                messages=[{"role": "user", "content": suffix}],
+            ),
+            provider="anthropic",
+        )
+        assert changed.plan is not None and len(changed.plan.breakpoints) == 1
+        assert (changed.plan.breakpoints[0].fingerprint == original) is equivalent
+
+
+@pytest.mark.parametrize("kind", sorted(ANTHROPIC_TOOL_SEARCH_TOOL_TYPES))
+@pytest.mark.parametrize("nested", (False, True))
+def test_search_tool_markers_match_the_effective_provider_mapping(kind: str, nested: bool) -> None:
+    control: Final = {"cache_control": {"type": "ephemeral", "ttl": "1h"}}
+    tool: Final = {"type": kind, "name": "search", **({"function": control} if nested else control)}
+    outgoing: Final = TypeAdapter(list[dict[str, JsonValue]]).validate_python(
+        AnthropicConfig().map_openai_params({"tools": [tool]}, {}, "claude-opus-5-5", False)["tools"]
+    )
+    system: Final = [{"type": "text", "text": _PROMPT, **control}]
+    observed: Final = _observation(_request(tools=[tool], system=system), provider="anthropic")
+    expected: Final = _observation(_request(tools=outgoing, system=system), provider="anthropic")
+    assert observed.plan is not None
+    assert len(observed.plan.breakpoints) == 1 + sum(bool(tool.get("cache_control")) for tool in outgoing)
+    assert observed.plan == expected.plan
 
 
 @pytest.mark.parametrize("surface", ("chat", "responses", "native"))
@@ -445,8 +561,13 @@ def test_partial_multimodal_cache_replaces_observed_splits_without_double_chargi
         actual_token_cost=100.0,
     )
     ordinary: Final = 2250 * 0.01 + 1000 * 0.02 + 500 * 0.03 + 250 * 0.04 + 20 * 0.03
+    observed: Final = sum(
+        generic_cost_per_token("test-model", _baseline_usage(usage, prices), "gemini", model_info=prices)
+    )
+    assert observed == pytest.approx(
+        3600 * 0.01 + 1200 * 0.02 + 700 * 0.03 + 500 * 0.04 + 1200 * 0.001 + 800 * 0.002 + 20 * 0.03
+    )
     for value, expected in (
-        (usage, 3600 * 0.01 + 1200 * 0.02 + 700 * 0.03 + 500 * 0.04 + 1200 * 0.001 + 800 * 0.002 + 20 * 0.03),
         (cold[0].usage, ordinary + 4000 * 0.017),
         (warm[0].usage, ordinary + 3000 * 0.001 + 1000 * 0.002),
     ):

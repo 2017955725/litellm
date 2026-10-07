@@ -140,7 +140,8 @@ def baseline_publication(
     record: BaselineAccountingRecord, estimate: BaselineEstimate, first_at: float
 ) -> BaselinePublication:
     costs: Final = price_baseline_comparison(record.pricing, estimate.usage, estimate.provenance)
-    details: Final = estimate.usage.prompt_tokens_details if estimate.usage is not None else None
+    usage: Final = estimate.usage
+    details: Final = usage.prompt_tokens_details if usage is not None else None
     writes: Final = getattr(details, "cache_creation_token_details", None) if details is not None else None
     return BaselinePublication(
         comparison_id=record.scope,
@@ -150,7 +151,9 @@ def baseline_publication(
         provenance=estimate.provenance if costs is not None else None,
         actual_spend=costs.actual if costs is not None else None,
         baseline_spend=costs.baseline if costs is not None else None,
-        input_tokens=details.text_tokens if details is not None else None,
+        input_tokens=usage.prompt_tokens - (details.cached_tokens or 0) - (details.cache_creation_tokens or 0)
+        if usage is not None and details is not None
+        else None,
         cache_read_input_tokens=details.cached_tokens if details is not None else None,
         assumptions=record.observation.assumptions,
         cache_creation_input_tokens=details.cache_creation_tokens if details is not None else None,

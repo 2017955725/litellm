@@ -77,6 +77,18 @@ def _parts(message: dict[str, JsonValue]) -> Iterator[_Part]:
         )
 
 
+def _tool_cache_control(tool: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    function: Final = tool.get("function")
+    if tool.get("type") not in ("function", "custom") or "input_schema" in tool or not isinstance(function, dict):
+        return tool
+    control: Final = tool.get("cache_control")
+    return {
+        **tool,
+        "function": {key: value for key, value in function.items() if key != "cache_control"},
+        "cache_control": control if control is not None else function.get("cache_control"),
+    }
+
+
 def prepare_cache_request(
     kwargs: Mapping[str, object], model: str | None = None, provider: str | None = None, *, native: bool = False
 ) -> dict[str, JsonValue] | None:
@@ -209,10 +221,13 @@ def estimate_cache_plan(
         input_messages: Final = _MESSAGES.validate_python(
             supplied if isinstance(supplied, list) else resolve_structured_messages(None, {"input": supplied})
         )
+        tools: Final = [_tool_cache_control(tool) for tool in _MESSAGES.validate_python(request.get("tools") or [])]
     except (ValidationError, TypeError):
         return None
     prefix: Final = tuple(
-        {"role": "system", "content": request[key]} for key in ("tools", "system", "instructions") if request.get(key)
+        {"role": "system", "content": content}
+        for content in (tools, request.get("system"), request.get("instructions"))
+        if content
     )
     messages: Final = _MESSAGES.validate_python((*prefix, *input_messages))
     if (
@@ -327,6 +342,12 @@ def estimate_cache_plan(
             ),
         ),
     )
+
+
+def prepare_baseline_usage(usage: Usage | None, provider: str, request: Mapping[str, JsonValue] | None) -> Usage | None:
+    if usage is None or request is None or provider != "anthropic":
+        return usage
+    return usage.model_copy(update={key: request.get(key) for key in ("speed", "inference_geo")})
 
 
 def normalize_cache_usage(usage: Usage) -> Usage:
