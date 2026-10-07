@@ -34,7 +34,7 @@
 
 ## Docs
 
-- [Messages API](https://platform.minimax.io/docs/api-reference/text-chat-anthropic)
-- [Messages API, Markdown](https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md)
-- [Explicit prompt caching](https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache.md)
-- [MiniMax documentation index, llms.txt](https://platform.minimax.io/docs/llms.txt)
+- https://platform.minimax.io/docs/api-reference/text-chat-anthropic
+- https://platform.minimax.io/docs/api-reference/text-chat-anthropic.md
+- https://platform.minimax.io/docs/api-reference/anthropic-api-compatible-cache.md
+- https://platform.minimax.io/docs/llms.txt

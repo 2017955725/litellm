@@ -33,7 +33,7 @@
 
 ## Docs
 
-- [Claude Messages request and response](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html)
-- [Claude Messages request and response, Markdown](https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.md)
-- [InvokeModelWithResponseStream](https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InvokeModelWithResponseStream.html)
-- [Bedrock user guide index, llms.txt](https://docs.aws.amazon.com/bedrock/latest/userguide/llms.txt)
+- https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.html
+- https://docs.aws.amazon.com/bedrock/latest/userguide/model-parameters-anthropic-claude-messages-request-response.md
+- https://docs.aws.amazon.com/bedrock/latest/APIReference/API_runtime_InvokeModelWithResponseStream.html
+- https://docs.aws.amazon.com/bedrock/latest/userguide/llms.txt

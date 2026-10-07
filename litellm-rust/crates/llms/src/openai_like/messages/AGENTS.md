@@ -35,5 +35,5 @@
 
 ## Docs
 
-- [Anthropic Messages protocol reference for this generic adapter](https://platform.claude.com/docs/en/api/messages/create)
-- [Anthropic documentation index, llms.txt](https://platform.claude.com/llms.txt)
+- https://platform.claude.com/docs/en/api/messages/create
+- https://platform.claude.com/llms.txt

@@ -34,7 +34,7 @@
 
 ## Docs
 
-- [Copilot SDK streaming events, which list `/v1/messages` as a usage endpoint](https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/streaming-events)
-- [The same page as Markdown](https://docs.github.com/api/article/body?pathname=/en/copilot/how-tos/copilot-sdk/features/streaming-events)
-- [GitHub documentation index, llms.txt](https://docs.github.com/llms.txt)
-- [Anthropic Messages API](https://platform.claude.com/docs/en/api/http/messages/create)
+- https://docs.github.com/en/copilot/how-tos/copilot-sdk/features/streaming-events
+- https://docs.github.com/api/article/body?pathname=/en/copilot/how-tos/copilot-sdk/features/streaming-events
+- https://docs.github.com/llms.txt
+- https://platform.claude.com/docs/en/api/http/messages/create

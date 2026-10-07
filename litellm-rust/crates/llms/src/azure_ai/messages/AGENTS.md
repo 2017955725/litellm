@@ -39,6 +39,8 @@ This directory owns Azure's Messages adapter: its endpoints, authentication poli
 
 ## Docs
 
-- [Claude in Microsoft Foundry](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry) ([Markdown](https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry.md), indexed in [llms.txt](https://platform.claude.com/llms.txt))
-- [Deploy and use Claude models in Microsoft Foundry](https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-claude)
-- [Messages API](https://platform.claude.com/docs/en/api/http/messages/create)
+- https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry
+- https://platform.claude.com/docs/en/build-with-claude/claude-in-microsoft-foundry.md
+- https://platform.claude.com/llms.txt
+- https://learn.microsoft.com/en-us/azure/foundry/foundry-models/how-to/use-foundry-models-claude
+- https://platform.claude.com/docs/en/api/http/messages/create

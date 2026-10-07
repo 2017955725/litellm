@@ -33,4 +33,4 @@
 
 ## Docs
 
-- [Anthropic API compatibility guide](https://api-docs.deepseek.com/guides/anthropic_api/) (no Markdown or llms.txt variant is published)
+- https://api-docs.deepseek.com/guides/anthropic_api/

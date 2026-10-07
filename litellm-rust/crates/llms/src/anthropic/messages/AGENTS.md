@@ -36,9 +36,10 @@ This directory owns Anthropic's implementation of the Messages adapter contract 
 
 ## Docs
 
-- [Messages API](https://platform.claude.com/docs/en/api/http/messages/create) ([Markdown](https://platform.claude.com/docs/en/api/messages/create.md))
-- [Beta headers](https://platform.claude.com/docs/en/api/beta-headers.md)
-- [Versioning](https://platform.claude.com/docs/en/api/versioning.md)
-- [Streaming](https://platform.claude.com/docs/en/build-with-claude/streaming.md)
-- [Authentication](https://platform.claude.com/docs/en/manage-claude/authentication.md)
-- [Docs index](https://platform.claude.com/llms.txt)
+- https://platform.claude.com/docs/en/api/http/messages/create
+- https://platform.claude.com/docs/en/api/messages/create.md
+- https://platform.claude.com/docs/en/api/beta-headers.md
+- https://platform.claude.com/docs/en/api/versioning.md
+- https://platform.claude.com/docs/en/build-with-claude/streaming.md
+- https://platform.claude.com/docs/en/manage-claude/authentication.md
+- https://platform.claude.com/llms.txt

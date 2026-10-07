@@ -26,4 +26,4 @@
 
 ## Docs
 
-- [Native Anthropic Messages API, including Mantle](https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.md)
+- https://docs.aws.amazon.com/bedrock/latest/userguide/inference-messages-api.md
