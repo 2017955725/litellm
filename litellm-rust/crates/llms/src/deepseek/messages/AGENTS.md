@@ -21,9 +21,15 @@
 - Billing metadata is stripped from `system`, and an emptied `system` is omitted
 - DeepSeek ignores `anthropic-beta` on Messages, so do not invent DeepSeek-specific betas
 
+# Decisions
+
+- A missing key is a `MissingApiKey` error naming `DEEPSEEK_API_KEY`. Python sends the request without a credential and lets DeepSeek reject it
+- Every `anthropic-beta` value is dropped, matching Python's provider filter, which has no `deepseek` column in `anthropic_beta_headers_config.json`
+
 # Known gaps
 
-- `mod.rs` is empty: the Rust adapter is not implemented yet, so none of the rules above are enforced in Rust
+- Python's last key fallback, the SDK global `litellm.api_key`, is not ported because it is an SDK-only setting
+- Not wired into `core` or `LlmProviders` yet
 
 # References
 

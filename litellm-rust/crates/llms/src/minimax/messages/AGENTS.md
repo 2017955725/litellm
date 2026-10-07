@@ -13,7 +13,7 @@
 
 - A China-region base such as `https://api.minimaxi.com/anthropic`, a base ending in `/v1`, and one already ending in `/v1/messages` must all resolve to the same `/v1/messages` path
 - Environment validation receives the caller's `api_base`, not the resolved default
-- `compaction` is unsupported because the provider is not `anthropic`, even though the rest of the payload policy is Anthropic's
+- `compaction` is unsupported because the provider is not `anthropic`, even though the rest of the payload policy is Anthropic's. Python still sends it in the body; Rust drops it silently, like Tencent, and the compaction beta never goes out
 
 # Decisions
 
@@ -22,7 +22,9 @@
 
 # Known gaps
 
-- `mod.rs` is empty, so there is no Rust MiniMax Messages adapter yet
+- Python's last key fallback to the global `litellm.api_key` has no Rust equivalent
+- Not wired into `core` (`core/src/messages/common_utils.rs`) or `LlmProviders` yet
+- The MiniMax-only content blocks in `litellm-llms-types::providers::minimax` are not parsed or validated by the adapter; they pass through as unrecognized Anthropic blocks
 
 # References
 

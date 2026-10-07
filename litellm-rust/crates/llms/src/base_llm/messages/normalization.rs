@@ -1,8 +1,14 @@
-use litellm_llms_types::formats::messages::{
-    ContentBlock, Message, MessageContent, MessagesOptionalParams, MessagesRequest, SystemPrompt,
+use litellm_llms_types::{
+    formats::messages::{
+        CacheControl, ContentBlock, ContentBlockType, Message, MessageContent,
+        MessagesOptionalParams, MessagesRequest, SystemPrompt,
+    },
+    recognized::Recognized,
+    serde_compat::Nullable,
 };
 
 const SYSTEM_ROLE: &str = "system";
+const BILLING_HEADER_PREFIX: &str = "x-anthropic-billing-header:";
 
 fn content_into_blocks(content: MessageContent) -> Vec<ContentBlock> {
     match content {
@@ -49,5 +55,179 @@ pub fn fold_system_role_messages(request: MessagesRequest) -> MessagesRequest {
             ..request.params
         },
         ..request
+    }
+}
+
+fn is_billing_metadata(text: &str) -> bool {
+    text.starts_with(BILLING_HEADER_PREFIX)
+}
+
+fn is_billing_metadata_block(block: &ContentBlock) -> bool {
+    matches!(
+        block.block_type,
+        Some(Nullable::Value(ContentBlockType::Text))
+    ) && matches!(&block.text, Some(Nullable::Value(text)) if is_billing_metadata(text))
+}
+
+fn without_billing_metadata(system: SystemPrompt) -> Option<SystemPrompt> {
+    match system {
+        SystemPrompt::Text(text) if text.is_empty() || is_billing_metadata(&text) => None,
+        SystemPrompt::Text(text) => Some(SystemPrompt::Text(text)),
+        SystemPrompt::Blocks(blocks) => {
+            let kept: Vec<ContentBlock> = blocks
+                .into_iter()
+                .filter(|block| !is_billing_metadata_block(block))
+                .collect();
+            (!kept.is_empty()).then_some(SystemPrompt::Blocks(kept))
+        }
+    }
+}
+
+/// Drops the `x-anthropic-billing-header` text Claude Code puts in `system`, which only the
+/// first-party API understands, and omits `system` when nothing else is left.
+pub fn strip_billing_metadata(request: MessagesRequest) -> MessagesRequest {
+    MessagesRequest {
+        params: MessagesOptionalParams {
+            system: request.params.system.and_then(without_billing_metadata),
+            ..request.params
+        },
+        ..request
+    }
+}
+
+fn without_scope(cache_control: CacheControl) -> CacheControl {
+    CacheControl {
+        scope: None,
+        ..cache_control
+    }
+}
+
+fn block_without_scope(block: ContentBlock) -> ContentBlock {
+    ContentBlock {
+        cache_control: block
+            .cache_control
+            .map(|cache_control| match cache_control {
+                Nullable::Value(cache_control) => Nullable::Value(without_scope(cache_control)),
+                other => other,
+            }),
+        ..block
+    }
+}
+
+fn blocks_without_scope(blocks: Vec<ContentBlock>) -> Vec<ContentBlock> {
+    blocks.into_iter().map(block_without_scope).collect()
+}
+
+/// Removes `cache_control.scope`, which hosts other than the first-party API reject, from
+/// the top-level `cache_control` and every `system` and message block.
+pub fn strip_cache_control_scope(request: MessagesRequest) -> MessagesRequest {
+    MessagesRequest {
+        messages: request
+            .messages
+            .into_iter()
+            .map(|message| Message {
+                content: match message.content {
+                    MessageContent::Blocks(blocks) => {
+                        MessageContent::Blocks(blocks_without_scope(blocks))
+                    }
+                    text => text,
+                },
+                ..message
+            })
+            .collect(),
+        params: MessagesOptionalParams {
+            system: request.params.system.map(|system| match system {
+                SystemPrompt::Blocks(blocks) => SystemPrompt::Blocks(blocks_without_scope(blocks)),
+                text => text,
+            }),
+            cache_control: request
+                .params
+                .cache_control
+                .map(|cache_control| match cache_control {
+                    Recognized::Known(cache_control) => {
+                        Recognized::Known(without_scope(cache_control))
+                    }
+                    other => other,
+                }),
+            ..request.params
+        },
+        ..request
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use rstest::rstest;
+    use serde_json::{Value, json};
+
+    use super::*;
+
+    fn system_after_strip(system: Value) -> Value {
+        let request: MessagesRequest = serde_json::from_value(json!({
+            "model": "m",
+            "max_tokens": 1,
+            "system": system,
+            "messages": [{"role": "user", "content": "hi"}]
+        }))
+        .unwrap();
+        serde_json::to_value(strip_billing_metadata(request)).unwrap()["system"].clone()
+    }
+
+    #[test]
+    fn cache_control_scope_is_stripped_everywhere_and_idempotently() {
+        let request: MessagesRequest = serde_json::from_value(json!({
+            "model": "m",
+            "max_tokens": 1,
+            "cache_control": {"type": "ephemeral", "scope": "global"},
+            "system": [{"type": "text", "text": "s", "cache_control": {"type": "ephemeral", "ttl": "1h", "scope": "global"}}],
+            "messages": [
+                {"role": "user", "content": [
+                    {"type": "text", "text": "a", "cache_control": {"type": "ephemeral", "scope": "global"}},
+                    {"type": "text", "text": "b"}
+                ]},
+                {"role": "assistant", "content": "plain"}
+            ]
+        }))
+        .unwrap();
+        let once = strip_cache_control_scope(request);
+        let value = serde_json::to_value(&once).unwrap();
+        assert_eq!(value["cache_control"], json!({"type": "ephemeral"}));
+        assert_eq!(
+            value["system"][0]["cache_control"],
+            json!({"type": "ephemeral", "ttl": "1h"})
+        );
+        assert_eq!(
+            value["messages"][0]["content"][0]["cache_control"],
+            json!({"type": "ephemeral"})
+        );
+        assert_eq!(
+            value["messages"][0]["content"][1],
+            json!({"type": "text", "text": "b"})
+        );
+        assert_eq!(value["messages"][1]["content"], json!("plain"));
+        assert_eq!(strip_cache_control_scope(once.clone()), once);
+    }
+
+    #[rstest]
+    #[case::billing_string(json!("x-anthropic-billing-header: cc_version=1"), Value::Null)]
+    #[case::empty_string(json!(""), Value::Null)]
+    #[case::plain_string(json!("be terse"), json!("be terse"))]
+    #[case::only_billing_blocks(
+        json!([{"type": "text", "text": "x-anthropic-billing-header: cc_version=1"}]),
+        Value::Null
+    )]
+    #[case::billing_block_among_others(
+        json!([
+            {"type": "text", "text": "x-anthropic-billing-header: cc_version=1"},
+            {"type": "text", "text": "be terse", "cache_control": {"type": "ephemeral"}}
+        ]),
+        json!([{"type": "text", "text": "be terse", "cache_control": {"type": "ephemeral"}}])
+    )]
+    #[case::prefix_not_at_start(
+        json!([{"type": "text", "text": "see x-anthropic-billing-header: here"}]),
+        json!([{"type": "text", "text": "see x-anthropic-billing-header: here"}])
+    )]
+    fn billing_metadata_is_stripped_from_system(#[case] system: Value, #[case] expected: Value) {
+        assert_eq!(system_after_strip(system), expected);
     }
 }

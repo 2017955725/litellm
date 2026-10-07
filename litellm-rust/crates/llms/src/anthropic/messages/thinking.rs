@@ -11,12 +11,10 @@ use litellm_llms_types::{
 use litellm_python_compat::{json::from_json, repr::repr, truthy::truthy};
 use serde_json::Value;
 
-use crate::base_llm::messages::context::{
-    MessagesModelCapabilities, ThinkingBudgets, ThinkingContext,
-};
 use crate::{
     Error,
     anthropic::common_utils::{accepts_effort, supports_effort_param},
+    base_llm::messages::context::{MessagesModelCapabilities, ThinkingBudgets, ThinkingContext},
 };
 
 pub const ANTHROPIC_MIN_THINKING_BUDGET_TOKENS: u64 = 1024;
@@ -140,7 +138,7 @@ fn legacy_reasoning_effort(
     }
 }
 
-fn translate_reasoning_effort(
+pub(crate) fn translate_reasoning_effort(
     request: MessagesRequest,
     context: &ThinkingContext,
 ) -> Result<MessagesRequest, Error> {

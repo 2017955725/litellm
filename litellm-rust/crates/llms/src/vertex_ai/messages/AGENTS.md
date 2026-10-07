@@ -9,7 +9,7 @@
 - Resolve project, location and credentials without consuming them from the caller's params
 - Copy headers before changing them so shared deployment headers stay untouched
 - `model` is removed from the body because Vertex takes it only from the URL
-- The URL is fixed during environment validation, and later URL resolution only returns it
+- The URL and the environment never disagree: Python fixes the URL during environment validation, and here project and location resolve from the same settings through one `VertexTarget::resolve` every time
 
 # Boundaries
 
@@ -26,7 +26,13 @@
 
 # Known gaps
 
-- `mod.rs` is empty: the adapter is not implemented in Rust yet, so every rule above describes the target behavior from Python
+- `model` is still serialized into the body: `BaseMessagesConfig` returns a typed `MessagesRequest` whose `model` is always written, so dropping it needs a shared wire-body hook in the trait or in core
+- Project and location come only from `VERTEXAI_PROJECT`, `VERTEXAI_LOCATION` and `VERTEX_LOCATION`, because core does not pass `vertex_project`, `vertex_location` or `vertex_credentials` from `litellm_params` to Messages configs yet
+- A project is required up front. Python can take it from the credentials, but that lookup is async and the URL is built synchronously, so a missing project is a configuration error here
+- The model catalog's `supported_regions` override is not applied, since no catalog lookup reaches this adapter, so the location defaults to `us-central1`
+- Tokens are minted through a process-wide `VertexAuth` in this module, not the `AuthServices.gcp` cache that OCR uses, because `AuthScheme` has no Vertex variant that `resolve_auth` could route to it
+- A request-controlled `api_base` is not rejected before a minted token is sent to it, unlike OCR, because Messages configs do not see where `api_base` came from
+- `scope` is stripped from system, message and top-level `cache_control`, but not from tool definitions
 
 # References
 

@@ -23,8 +23,9 @@
 
 # Known gaps
 
-- The Rust adapter does not exist yet: `mod.rs` is empty
-- Rust does not load `providers.json` for chat or messages yet
+- Rust does not load `providers.json` for chat or messages yet, so `OpenAILikeMessagesConfig::Registry` only runs over a `JsonProvider` built in code. The loader belongs in `openai_like` and must keep each entry `&'static` so `secret_names` can borrow from it
+- Registry providers do not fall back to the global `litellm.api_key` after the deployment key and the entry's `api_key_env`
+- Neither variant is wired into `core` yet, including the `model_info.supported_endpoints` and `model_info.cache_control_ttl` opt-ins for the per-deployment variant
 
 # References
 

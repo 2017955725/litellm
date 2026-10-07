@@ -8,8 +8,10 @@ use litellm_llms_types::{
 };
 use serde_json::{Map, Value, json};
 
-use super::{handler::shape_anthropic_messages_request, thinking::translate_thinking};
-use crate::base_llm::messages::context::MessagesTransformContext;
+use super::{
+    handler::shape_anthropic_messages_request,
+    thinking::{translate_reasoning_effort, translate_thinking},
+};
 use crate::{
     Error,
     anthropic::common_utils::{
@@ -21,7 +23,11 @@ use crate::{
     },
     base_llm::{
         auth::AuthScheme,
-        messages::transformation::{BaseMessagesConfig, Headers, ValidatedEnvironment},
+        messages::{
+            context::MessagesTransformContext,
+            normalization::{strip_billing_metadata, strip_cache_control_scope},
+            transformation::{BaseMessagesConfig, Headers, ValidatedEnvironment},
+        },
     },
 };
 
@@ -109,15 +115,102 @@ impl BaseMessagesConfig for AnthropicMessagesConfig {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ThinkingSemantics {
+    /// Claude's rules: disabled thinking is dropped, legacy and adaptive thinking and effort
+    /// are rewritten for the model, and a temperature that conflicts with thinking is removed.
+    Anthropic,
+    /// The host reads `thinking` its own way, so only `reasoning_effort` is mapped.
+    Passthrough,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BillingMetadata {
+    Forward,
+    Strip,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CacheControlScope {
+    Forward,
+    Strip,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Compaction {
+    Forward,
+    Drop,
+}
+
+/// How an Anthropic-wire host diverges from the first-party request policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RequestPolicy {
+    pub thinking: ThinkingSemantics,
+    pub billing_metadata: BillingMetadata,
+    pub cache_control_scope: CacheControlScope,
+    pub compaction: Compaction,
+}
+
+pub const FIRST_PARTY_REQUEST_POLICY: RequestPolicy = RequestPolicy {
+    thinking: ThinkingSemantics::Anthropic,
+    billing_metadata: BillingMetadata::Forward,
+    cache_control_scope: CacheControlScope::Forward,
+    compaction: Compaction::Forward,
+};
+
+/// Claude served by a cloud partner (Azure Foundry, Vertex AI), which rejects first-party-only
+/// request fields.
+pub const PARTNER_HOST_REQUEST_POLICY: RequestPolicy = RequestPolicy {
+    billing_metadata: BillingMetadata::Strip,
+    cache_control_scope: CacheControlScope::Strip,
+    ..FIRST_PARTY_REQUEST_POLICY
+};
+
+/// A third-party host that speaks the Anthropic wire format but is not Claude.
+pub const COMPATIBLE_HOST_REQUEST_POLICY: RequestPolicy = RequestPolicy {
+    thinking: ThinkingSemantics::Passthrough,
+    billing_metadata: BillingMetadata::Strip,
+    ..FIRST_PARTY_REQUEST_POLICY
+};
+
 pub(crate) fn transform_messages_request(
     request: MessagesRequest,
     context: &MessagesTransformContext,
+) -> Result<MessagesRequest, Error> {
+    transform_messages_request_with(request, context, FIRST_PARTY_REQUEST_POLICY)
+}
+
+pub(crate) fn transform_messages_request_with(
+    request: MessagesRequest,
+    context: &MessagesTransformContext,
+    policy: RequestPolicy,
 ) -> Result<MessagesRequest, Error> {
     if request.params.max_tokens.is_none() {
         return Err(Error::MissingField("max_tokens"));
     }
     let request = drop_unsupported_params(request, context)?;
-    let request = translate_thinking(request, &context.thinking)?;
+    let request = match policy.thinking {
+        ThinkingSemantics::Anthropic => translate_thinking(request, &context.thinking)?,
+        ThinkingSemantics::Passthrough => translate_reasoning_effort(request, &context.thinking)?,
+    };
+    let request = match policy.billing_metadata {
+        BillingMetadata::Forward => request,
+        BillingMetadata::Strip => strip_billing_metadata(request),
+    };
+    let request = match policy.cache_control_scope {
+        CacheControlScope::Forward => request,
+        CacheControlScope::Strip => strip_cache_control_scope(request),
+    };
+    let request = match policy.compaction {
+        Compaction::Forward => request,
+        Compaction::Drop => MessagesRequest {
+            params: MessagesOptionalParams {
+                compaction: None,
+                ..request.params
+            },
+            ..request
+        },
+    };
     let context_management = request
         .params
         .context_management
@@ -325,15 +418,17 @@ pub fn map_openai_context_management_to_anthropic(
 
 #[cfg(test)]
 mod tests {
-    use crate::base_llm::messages::context::{
-        MessagesModelCapabilities, ThinkingBudgets, ThinkingContext,
-    };
     use std::process::Command;
 
     use rstest::{fixture, rstest};
 
     use super::*;
-    use crate::anthropic::common_utils::ENCRYPTED_REASONING_SIGNATURE_PREFIX;
+    use crate::{
+        anthropic::common_utils::ENCRYPTED_REASONING_SIGNATURE_PREFIX,
+        base_llm::messages::context::{
+            MessagesModelCapabilities, ThinkingBudgets, ThinkingContext,
+        },
+    };
 
     type Env = &'static [(&'static str, &'static str)];
 
@@ -400,6 +495,56 @@ mod tests {
                 &MessagesTransformContext::with_lookup(capabilities, drop_params, &no_env),
             )
             .map(|transformed| serde_json::to_value(transformed).unwrap())
+    }
+
+    fn transform_with(fields: Value, policy: RequestPolicy) -> Value {
+        let context = MessagesTransformContext::with_lookup(
+            MessagesModelCapabilities {
+                supports_reasoning: true,
+                thinking_always_on: true,
+                ..Default::default()
+            },
+            false,
+            &no_env,
+        );
+        serde_json::to_value(
+            transform_messages_request_with(request(fields), &context, policy).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[rstest]
+    #[case::first_party(FIRST_PARTY_REQUEST_POLICY, Value::Null, json!("x-anthropic-billing-header: cc_version=1"))]
+    #[case::compatible_host(COMPATIBLE_HOST_REQUEST_POLICY, json!({"type": "disabled"}), Value::Null)]
+    fn the_request_policy_picks_thinking_rewrites_and_billing_stripping(
+        #[case] policy: RequestPolicy,
+        #[case] thinking: Value,
+        #[case] system: Value,
+    ) {
+        let transformed = transform_with(
+            json!({
+                "thinking": {"type": "disabled"},
+                "system": "x-anthropic-billing-header: cc_version=1"
+            }),
+            policy,
+        );
+        assert_eq!(transformed["thinking"], thinking);
+        assert_eq!(transformed["system"], system);
+    }
+
+    #[rstest]
+    #[case::first_party(FIRST_PARTY_REQUEST_POLICY)]
+    #[case::compatible_host(COMPATIBLE_HOST_REQUEST_POLICY)]
+    fn every_policy_maps_reasoning_effort(#[case] policy: RequestPolicy) {
+        let transformed = transform_with(
+            json!({"max_tokens": 4096, "reasoning_effort": "low"}),
+            policy,
+        );
+        assert_eq!(transformed.get("reasoning_effort"), None);
+        assert_eq!(
+            transformed["thinking"],
+            json!({"type": "enabled", "budget_tokens": ThinkingBudgets::default().low})
+        );
     }
 
     fn advisor_history() -> Value {

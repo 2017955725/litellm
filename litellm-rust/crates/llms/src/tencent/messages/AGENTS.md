@@ -21,9 +21,15 @@
 
 - Reuse Anthropic payload and response helpers explicitly and keep Tencent differences here. Sharing them does not make Anthropic policy a Messages-wide default
 
+# Decisions
+
+- Python drops every `anthropic-beta` value for Tencent because its beta filter has no `tencent` column, so the adapter uses `BetaPolicy::Drop`
+- `compaction` is removed from the body. Python lists it as unsupported for non-Anthropic providers but never applies that list, so it still forwards the field
+
 # Known gaps
 
-- `mod.rs` is empty: the Rust adapter is not implemented yet
+- Python's last-resort fallback to the SDK-global `litellm.api_key` is not ported, since the gateway has no such global
+- Not yet wired into `core` or `LlmProviders`
 
 # References
 

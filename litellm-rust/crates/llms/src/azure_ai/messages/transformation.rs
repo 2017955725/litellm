@@ -1,9 +1,6 @@
 use litellm_auth::{CredentialPlacement, SecretValue};
 use litellm_http::request::{has_bearer_auth, has_header};
-use litellm_llms_types::formats::messages::{
-    CacheControl, ContentBlock, Message, MessageContent, MessagesOptionalParams, MessagesRequest,
-    SystemPrompt,
-};
+use litellm_llms_types::formats::messages::MessagesRequest;
 
 use crate::{
     Error,
@@ -11,7 +8,10 @@ use crate::{
         common_utils::DEFAULT_ANTHROPIC_HEADERS,
         messages::{
             handler::shape_anthropic_messages_request,
-            transformation::{transform_messages_request, update_headers_with_anthropic_beta},
+            transformation::{
+                PARTNER_HOST_REQUEST_POLICY, transform_messages_request_with,
+                update_headers_with_anthropic_beta,
+            },
         },
     },
     azure_ai::common_utils::{
@@ -58,21 +58,10 @@ impl BaseMessagesConfig for AzureAnthropicMessagesConfig {
         request: MessagesRequest,
         context: &MessagesTransformContext,
     ) -> Result<MessagesRequest, Error> {
-        let request = fold_system_role_messages(request);
-        transform_messages_request(
-            MessagesRequest {
-                messages: request
-                    .messages
-                    .into_iter()
-                    .map(strip_scope_from_message)
-                    .collect(),
-                params: MessagesOptionalParams {
-                    system: request.params.system.map(strip_scope_from_system),
-                    ..request.params
-                },
-                ..request
-            },
+        transform_messages_request_with(
+            fold_system_role_messages(request),
             context,
+            PARTNER_HOST_REQUEST_POLICY,
         )
     }
 
@@ -130,51 +119,12 @@ pub fn complete_azure_anthropic_url(
     Ok(format!("{with_anthropic}{MESSAGES_PATH_SUFFIX}"))
 }
 
-fn strip_scope_from_block(block: ContentBlock) -> ContentBlock {
-    ContentBlock {
-        cache_control: block
-            .cache_control
-            .map(|cache_control| match cache_control {
-                litellm_llms_types::serde_compat::Nullable::Value(cache_control) => {
-                    litellm_llms_types::serde_compat::Nullable::Value(CacheControl {
-                        scope: None,
-                        ..cache_control
-                    })
-                }
-                other => other,
-            }),
-        ..block
-    }
-}
-
-fn strip_scope_from_system(system: SystemPrompt) -> SystemPrompt {
-    match system {
-        SystemPrompt::Blocks(blocks) => {
-            SystemPrompt::Blocks(blocks.into_iter().map(strip_scope_from_block).collect())
-        }
-        text => text,
-    }
-}
-
-fn strip_scope_from_message(message: Message) -> Message {
-    Message {
-        content: match message.content {
-            MessageContent::Blocks(blocks) => {
-                MessageContent::Blocks(blocks.into_iter().map(strip_scope_from_block).collect())
-            }
-            text => text,
-        },
-        ..message
-    }
-}
-
 #[cfg(test)]
 mod tests {
+    use litellm_auth::CredentialPlacement;
     use litellm_llms_types::formats::messages::MessagesResponse;
     use rstest::rstest;
     use serde_json::json;
-
-    use litellm_auth::CredentialPlacement;
 
     use super::*;
     use crate::base_llm::messages::context::MessagesModelCapabilities;

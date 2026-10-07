@@ -20,9 +20,17 @@
 - `X-Initiator` and `Copilot-Vision-Request` belong to the Copilot chat config. The Python Messages path does not send them, so do not add them here without a parity reason
 - Copilot publishes no full HTTP spec for its `/v1/messages` endpoint, so the Anthropic Messages API is the working contract
 
+# Decisions
+
+- The Copilot token comes from an injected `CopilotTokenCache` (`github_copilot/common_utils.rs`). `cached()` reads `endpoints.api` for the URL without refreshing, like Python's `get_api_base`, and `acquire()` yields the bearer at send time through `AuthScheme::Token`
+- The acquired Copilot bearer replaces any forwarded `authorization`. Python only fills it when the caller sent none, which would let a caller header stand in for the Copilot token
+- The payload follows the first-party request policy (Claude thinking rules, billing metadata kept), matching Python's base `AnthropicMessagesConfig`
+
 # Known gaps
 
-- `messages/mod.rs` is empty: there is no Rust adapter yet, so none of the rules above are implemented
+- No Rust `CopilotTokenCache` exists yet: the device flow, the token files under `GITHUB_COPILOT_TOKEN_DIR` and the refresh against `GITHUB_COPILOT_API_KEY_URL` are still Python only, so the config has no `const` instance to wire
+- `BaseMessagesConfig` has no web search hook, so "not handled natively" is not expressed in Rust yet
+- `x-request-id` is not generated per request, because `litellm-llms` has no UUID dependency
 
 # References
 

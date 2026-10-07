@@ -9,6 +9,7 @@ This directory owns Azure's Messages adapter: its endpoints, authentication poli
 - `secret_names` lists every env name the adapter reads
 - A forwarded `x-api-key` or a non-blank `Authorization: Bearer` (an Entra ID token) is the credential, and the adapter adds no key on top of it
 - The Azure key goes in `x-api-key`, not Azure's usual `api-key`
+- `PARTNER_HOST_REQUEST_POLICY` strips `x-anthropic-billing-header` text blocks from `system` and `cache_control.scope` everywhere, as Python's `should_strip_billing_metadata` and `_remove_scope_from_cache_control` do
 - Removing `cache_control.scope` and folding `system`-role messages into top-level `system` stay idempotent and leave string content alone
 
 # Boundaries
@@ -27,7 +28,6 @@ This directory owns Azure's Messages adapter: its endpoints, authentication poli
 
 - Core maps every `azure_ai` model to this adapter, while Python uses it only when the lowercased model name contains `claude` and sends the rest through the chat-completions bridge
 - Python also reads `litellm.api_key`, `litellm.azure_key` and `AZURE_OPENAI_API_KEY`, renames a forwarded `api-key` to `x-api-key`, and mints an Entra ID token from tenant, client and secret params. Rust does none of these
-- Python drops `x-anthropic-billing-header` text blocks from `system` (`should_strip_billing_metadata`), and Rust still sends them upstream
 
 # References
 

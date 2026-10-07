@@ -23,9 +23,15 @@
 - Eden returns a top-level `cost` next to the Anthropic body. When present it replaces the price map estimate as the call's response cost, and a missing or malformed value is ignored
 - Streams carry no `cost` yet, so streamed spend falls back to the price map
 
+# Decisions
+
+- A caller `authorization` or `x-api-key` header is enough on its own. Python still demands a resolved key in that case, but the key would never be sent, so Rust does not fail the call for it
+
 # Known gaps
 
-- `mod.rs` is empty: the adapter is not ported to Rust yet, so everything above exists only in Python
+- `EdenAIMessagesConfig::reported_response_cost` reads the `cost`, but nothing calls it yet. `BaseMessagesConfig` has no hook for a provider-reported cost and core's Messages route records no response cost, so core needs both before Eden's figure replaces the price map estimate
+- Python also falls back to the global `litellm.api_key`; Rust reads only the explicit key and `EDENAI_API_KEY`
+- Python maps upstream errors through `EdenAIException`, which has no Rust counterpart here
 
 # References
 

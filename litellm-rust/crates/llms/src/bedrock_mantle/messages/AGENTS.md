@@ -6,7 +6,8 @@
 # Invariants
 
 - Wire format, beta filtering and stream decoding come from `bedrock/messages/mantle`. Do not fork or override them here
-- A bearer token wins when one resolves. Otherwise sign with SigV4, removing any caller `authorization` header first
+- A bearer token wins when one resolves: the caller's `api_key`, then `BEDROCK_MANTLE_API_KEY`, then `AWS_BEARER_TOKEN_BEDROCK`. Otherwise sign with SigV4. The shared adapter removes any caller copy of a header the signer computes first
+- The region comes from a public mantle host in `BEDROCK_MANTLE_API_BASE`, then `BEDROCK_MANTLE_REGION`, `AWS_REGION_NAME`, `AWS_REGION`, and defaults to `us-east-1`, unlike the `bedrock` spelling
 
 # Boundaries
 
@@ -15,7 +16,13 @@
 # Decisions
 
 - `bedrock_mantle` stays a separate LiteLLM provider because pricing, provider resolution and env var names key on the `bedrock_mantle/` prefix. It still gets no wire adapter of its own: the endpoint is the same one the `bedrock/mantle/` route calls
-- Composition, not inheritance: this config wraps the `bedrock` adapter, and `bedrock` never depends on `bedrock_mantle`
+- Composition, not inheritance: this config is the `bedrock` adapter built with this provider's `MantleSettings`, and `bedrock` never depends on `bedrock_mantle`
+
+# Known gaps
+
+- The `<region>/` model prefix Python reads in `split_mantle_region_prefix` does not pick the region yet. The core wiring has to strip it from the model and pass the region on
+- `aws_region_name` and the per-call `aws_*` credentials from litellm params are not read, for the same reason as in `bedrock/messages/mantle`
+- Python rewrites any `api_base` on a public mantle host to the bare `https://bedrock-mantle.<region>.api.aws` host, so an extra path or `http` scheme is dropped. The shared adapter keeps them
 
 # References
 
