@@ -243,7 +243,7 @@ def test_get_hidden_params_returns_none_for_non_dict_storage() -> None:
 
 
 def test_set_hidden_params_replaces_frozen_decisions_response_private_attr() -> None:
-    response: Final = DecisionsResponse(model="decider", answers={}, usage=None)
+    response: Final = DecisionsResponse(model="decider", answers=(), usage=None)
     replacement: Final = {"replacement": True}
 
     set_hidden_params(response, replacement)
